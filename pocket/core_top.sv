@@ -573,7 +573,7 @@ wire  [7:0] dl_data;
 data_loader #(
     .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx (matches data.json address)
     .ADDRESS_SIZE(28),
-    .WRITE_MEM_CLOCK_DELAY(32),   // slow down to match io_cycle rate (~32 clk_sys cycles)
+    .WRITE_MEM_CLOCK_DELAY(4),    // fast — we buffer via ioctl_req_wr handshake
     .OUTPUT_WORD_SIZE(1)
 ) data_loader_inst (
     .clk_74a(clk_74a),
@@ -1008,6 +1008,11 @@ reg [24:0] ioctl_load_addr;
 reg        ioctl_req_wr;
 reg        force_erase = 0;
 reg        erasing = 0;
+
+// PRG byte FIFO — buffers data_loader output for io_cycle consumption
+reg  [7:0] prg_fifo [0:255];
+reg  [7:0] prg_fifo_wr = 0;
+reg  [7:0] prg_fifo_rd = 0;
 reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
 reg [15:0] inj_end;
@@ -1029,7 +1034,9 @@ always @(posedge clk_sys) begin
     if (~io_cycle & io_cycleD) begin
         io_cycle_ce <= 1;
         io_cycle_we <= 0;
+
         if (ioctl_req_wr) begin
+            // Erase or meminit write
             ioctl_req_wr <= 0;
             io_cycle_we  <= 1;
             io_cycle_addr <= ioctl_load_addr;
@@ -1041,16 +1048,30 @@ always @(posedge clk_sys) begin
             else
                 io_cycle_data <= ioctl_data;
         end
+        else if (prg_fifo_rd != prg_fifo_wr) begin
+            // PRG FIFO has data — write one byte to SDRAM
+            io_cycle_we   <= 1;
+            io_cycle_addr <= ioctl_load_addr;
+            io_cycle_data <= prg_fifo[prg_fifo_rd];
+            ioctl_load_addr <= ioctl_load_addr + 1'b1;
+            prg_fifo_rd <= prg_fifo_rd + 1'd1;
+        end
     end
 
     if (io_cycle) {io_cycle_ce, io_cycle_we} <= 0;
 
-    // Handle file writes
+    // Handle file writes — use a FIFO to buffer PRG bytes
+    // data_loader fires faster than io_cycle can consume
     if (ioctl_wr) begin
         if (load_prg) begin
             if      (ioctl_addr == 0) begin ioctl_load_addr[7:0]  <= ioctl_data; inj_end[7:0]  <= ioctl_data; end
             else if (ioctl_addr == 1) begin ioctl_load_addr[15:8] <= ioctl_data; inj_end[15:8] <= ioctl_data; end
-            else begin ioctl_req_wr <= 1; inj_end <= inj_end + 1'b1; end
+            else begin
+                // Buffer the byte into FIFO
+                prg_fifo[prg_fifo_wr] <= ioctl_data;
+                prg_fifo_wr <= prg_fifo_wr + 1'd1;
+                inj_end <= inj_end + 1'b1;
+            end
         end
 
         if (load_crt) begin
