@@ -695,6 +695,7 @@ end
 
 // -- Playback (clk_sys): emit ioctl bytes from buffer --
 reg        ds_emit_ack = 0;
+reg        prg_done = 0;  // signals key injection block to auto-RUN
 reg [1:0]  emit_state = 0;
 reg [11:0] emit_addr;
 reg [11:0] emit_len;
@@ -744,8 +745,8 @@ always @(posedge clk_sys) begin
         ioctl_download <= 0;
         ds_emit_ack    <= ds_emit_req;
         emit_state     <= 2'd0;
-        // Trigger auto-RUN after final chunk
-        if (!emit_req_pending) start_strk <= 1;
+        // Signal auto-RUN after final chunk
+        if (!emit_req_pending) prg_load_done <= ~prg_load_done;
     end
     endcase
 end
