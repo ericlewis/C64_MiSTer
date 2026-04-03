@@ -592,6 +592,7 @@ localparam DL_DONE    = 3'd5;
 
 reg  [2:0]  dl_state = DL_IDLE;
 reg [26:0]  dl_delay_cnt;
+reg         dl_slot_pending = 0;
 reg [31:0]  dl_offset;
 reg [31:0]  dl_remaining;
 reg [24:0]  dl_total = 0;
@@ -603,11 +604,16 @@ always @(posedge clk_74a) begin
     target_dataslot_getfile  <= 0;
     target_dataslot_openfile <= 0;
 
+    // Track if a slot was actually requested (deferload)
+    if (dataslot_requestread) dl_slot_pending <= 1;
+
     case (dl_state)
     DL_IDLE: begin
-        if (dataslot_allcomplete) begin
+        // Only start DMA if a slot was actually requested by the Pocket
+        if (dataslot_allcomplete && dl_slot_pending) begin
+            dl_slot_pending <= 0;
             dl_state     <= DL_DELAY;
-            dl_delay_cnt <= 27'd74250000; // 1 second delay — let C64 boot fully
+            dl_delay_cnt <= 27'd74250000; // 1 second delay
         end
     end
 
