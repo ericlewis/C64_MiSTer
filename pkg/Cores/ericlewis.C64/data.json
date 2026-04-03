@@ -3,26 +3,18 @@
     "magic": "APF_VER_1",
     "data_slots": [
       {
-        "id": 0,
-        "name": "System ROMs",
-        "required": true,
-        "parameters": "0x00000000",
-        "extensions": ["rom"],
-        "filename": "c64_system.rom"
-      },
-      {
         "id": 1,
-        "name": "Program / Cartridge",
+        "name": "Load Program",
         "required": false,
         "parameters": "0x10000000",
-        "extensions": ["prg", "crt"]
+        "extensions": ["prg"]
       },
       {
         "id": 2,
-        "name": "Disk Image",
+        "name": "Load Cartridge",
         "required": false,
-        "parameters": "0x20000000",
-        "extensions": ["d64", "g64"]
+        "parameters": "0x10000000",
+        "extensions": ["crt"]
       }
     ]
   }
