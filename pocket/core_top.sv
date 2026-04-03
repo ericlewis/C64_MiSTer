@@ -388,25 +388,9 @@ always @(posedge clk_vid) begin
     vid_vb <= vblank_int;
 end
 
-// Debug: show colored border based on download state
-// Green = got dataslot_requestread, Red = got bridge writes, Blue = playback done
-reg [2:0] dbg_dl_flags = 0; // {playback_done, got_writes, got_request}
-always @(posedge clk_74a) begin
-    if (dataslot_requestread) dbg_dl_flags[0] <= 1;
-    if (bridge_wr && dl_active_74 && bridge_addr[31:28] != 4'hF && bridge_addr[31:28] != 4'h0)
-        dbg_dl_flags[1] <= 1;
-end
-always @(posedge clk_sys) begin
-    if (dl_phase == 2'd3) dbg_dl_flags[2] <= 1;
-end
 
-wire [23:0] dbg_color = {dbg_dl_flags[1] ? 8'hFF : 8'h00,   // R = got bridge writes
-                         dbg_dl_flags[0] ? 8'hFF : 8'h00,   // G = got request
-                         dbg_dl_flags[2] ? 8'hFF : 8'h00};  // B = playback done
-
-// Show debug color in border area (outside DE), normal video in active area
-assign video_rgb = (~vid_hb & ~vid_vb) ? {vid_r, vid_g, vid_b} : dbg_color;
-assign video_de  = 1'b1; // Always active so border is visible
+assign video_rgb = (~vid_hb & ~vid_vb) ? {vid_r, vid_g, vid_b} : 24'd0;
+assign video_de  = ~vid_hb & ~vid_vb;
 assign video_vs  = vid_vs;
 assign video_hs  = vid_hs;
 
