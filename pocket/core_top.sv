@@ -603,16 +603,17 @@ end
 
 // -- DMA state machine (clk_74a) --
 // Single always block drives ALL target_dataslot signals
-localparam DS_IDLE    = 3'd0;
-localparam DS_DELAY   = 3'd1;
-localparam DS_CHUNK   = 3'd2;
-localparam DS_WAIT    = 3'd3;
-localparam DS_EMIT    = 3'd4;
-localparam DS_DONE    = 3'd5;
+localparam DS_IDLE    = 4'd0;
+localparam DS_DELAY   = 4'd1;
+localparam DS_CHUNK   = 4'd2;
+localparam DS_ACK     = 4'd3;
+localparam DS_WAIT    = 4'd4;
+localparam DS_EMIT    = 4'd5;
+localparam DS_DONE    = 4'd6;
 
 localparam CHUNK_SIZE = 32'd1024;
 
-reg  [2:0] ds_state = DS_IDLE;
+reg  [3:0] ds_state = DS_IDLE;
 reg [26:0] ds_delay = 0;
 reg [31:0] ds_offset = 0;
 reg [31:0] ds_chunk_bytes = 0;
@@ -650,7 +651,8 @@ always @(posedge clk_74a) begin
     end
 
     DS_CHUNK: begin
-        // Request next 1KB chunk
+        // Request next 1KB chunk — hold target_dataslot_read high
+        // until we see target_dataslot_ack
         dl_chunk_start <= 1;
         dl_dma_active  <= 1;
         ds_timeout     <= 27'd74250000; // 1 second timeout
@@ -659,7 +661,21 @@ always @(posedge clk_74a) begin
         target_dataslot_bridgeaddr <= 32'h70000000;
         target_dataslot_length     <= CHUNK_SIZE;
         target_dataslot_read       <= 1;
-        ds_state <= DS_WAIT;
+        ds_state <= DS_ACK;
+    end
+
+    DS_ACK: begin
+        target_dataslot_read <= 1; // keep asserting until ack'd
+        ds_timeout <= ds_timeout - 1'd1;
+        if (target_dataslot_ack) begin
+            target_dataslot_read <= 0;
+            ds_state <= DS_WAIT;
+        end
+        else if (ds_timeout == 0) begin
+            target_dataslot_read <= 0;
+            dl_dma_active <= 0;
+            ds_state <= DS_DONE;
+        end
     end
 
     DS_WAIT: begin
