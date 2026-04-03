@@ -632,13 +632,13 @@ always @(posedge clk_74a) begin
     target_dataslot_openfile <= 0;
     dl_chunk_start <= 0;
 
-    // Capture file size from dataslot_requestwrite (sent before allcomplete)
-    if (dataslot_requestwrite && dataslot_requestwrite_id == 16'd1)
+    // Capture file size from dataslot_requestwrite
+    if (dataslot_requestwrite)
         ds_file_size <= dataslot_requestwrite_size;
 
     case (ds_state)
     DS_IDLE: begin
-        if (dataslot_allcomplete && ds_file_size > 0) begin
+        if (dataslot_allcomplete) begin
             ds_delay <= 27'd111375000; // 1.5 sec at 74.25 MHz
             ds_state <= DS_DELAY;
         end
@@ -648,7 +648,8 @@ always @(posedge clk_74a) begin
         ds_delay <= ds_delay - 1'd1;
         if (ds_delay == 0) begin
             ds_offset    <= 0;
-            ds_remaining <= ds_file_size;
+            // Use captured file size, or 64KB max if not captured
+            ds_remaining <= (ds_file_size > 0) ? ds_file_size : 32'd65536;
             ds_state     <= DS_CHUNK;
         end
     end
