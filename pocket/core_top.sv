@@ -628,7 +628,8 @@ always @(posedge clk_74a) begin
     target_dataslot_openfile <= 0;
     dl_chunk_start <= 0;
 
-    if (dataslot_requestread) ds_slot_seen <= 1;
+    // With deferload, Pocket sends dataslot_update (not requestread)
+    if (dataslot_requestread || dataslot_update) ds_slot_seen <= 1;
 
     case (ds_state)
     DS_IDLE: begin
