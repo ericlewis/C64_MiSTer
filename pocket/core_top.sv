@@ -534,257 +534,72 @@ wire load_crt = ioctl_index == 8'h41;
 wire load_rom = ioctl_index == 8'd8;
 
 // ============================================================
-//  PRG Loading via deferred data slot + target_dataslot_read
+//  PRG Loading via data_loader (agg23 utility)
 //
-//  Flow:
-//  1. User picks PRG at launch (required: true, deferload: true)
-//  2. C64 boots to BASIC normally (DMA waits 1.5 seconds)
-//  3. DMA requests file chunks into bridge addr 0x70000000
-//  4. Bridge writes captured into line buffer
-//  5. After DMA, playback feeds bytes through ioctl → C64 RAM
-//
-//  Safety: ioctl_download only goes high AFTER DMA completes,
-//  well after boot. The erasing stall in the reset block
-//  guarantees the C64 is fully booted before any loading.
+//  Non-deferred: Pocket writes file data directly to bridge at 0x1xxxxxxx.
+//  data_loader handles 32-bit word unpacking, endianness, and clock domain
+//  crossing via dcfifo. Outputs write_en/write_addr/write_data on clk_sys.
 // ============================================================
 
-// -- Line buffer for received data (4KB, enough per chunk) --
-reg  [7:0] dl_buf [0:4095];
-reg [11:0] dl_buf_wrptr = 0;
-reg [11:0] dl_buf_rdptr;
-reg  [7:0] dl_buf_rddata;
-
-always @(posedge clk_74a)
-    if (dl_buf_wr) dl_buf[dl_buf_wrptr] <= dl_buf_wrdata;
-
-always @(posedge clk_sys)
-    dl_buf_rddata <= dl_buf[dl_buf_rdptr];
-
-// -- Bridge write capture (clk_74a): only during active DMA --
-reg        dl_buf_wr = 0;
-reg  [7:0] dl_buf_wrdata;
-reg        dl_dma_active = 0;
-
-// Unpack 32-bit bridge writes to bytes
-reg  [1:0] dl_unpack = 0;
-reg [31:0] dl_unpack_word;
-reg [11:0] dl_unpack_base;
-
-always @(posedge clk_74a) begin
-    dl_buf_wr <= 0;
-
-    if (bridge_wr && bridge_addr[31:28] == 4'h7 && dl_dma_active) begin
-        // Use bridge address to determine byte offset within the chunk,
-        // not a running counter. This handles any write order.
-        // bridge_addr[9:0] is the byte offset within the 1KB chunk.
-        // Each write is a 32-bit word at a 4-byte aligned address.
-        // Unpack all 4 bytes using the address for positioning.
-        dl_unpack_word <= bridge_wr_data;
-        dl_unpack_base <= bridge_addr[11:0]; // byte address within chunk
-        dl_unpack      <= 2'd0;
-        // Write first byte immediately
-        dl_buf_wrdata  <= bridge_wr_data[7:0];  // try little-endian first
-        dl_buf_wrptr   <= bridge_addr[11:0];
-        dl_buf_wr      <= 1;
-        dl_unpack      <= 2'd1;
-    end
-    else if (dl_unpack != 0) begin
-        dl_buf_wr <= 1;
-        dl_buf_wrptr <= dl_unpack_base + {10'd0, dl_unpack};
-        case (dl_unpack)
-            2'd1: dl_buf_wrdata <= dl_unpack_word[15:8];
-            2'd2: dl_buf_wrdata <= dl_unpack_word[23:16];
-            2'd3: dl_buf_wrdata <= dl_unpack_word[31:24];
-        endcase
-        dl_unpack <= (dl_unpack == 2'd3) ? 2'd0 : dl_unpack + 1'd1;
-    end
-
-    // Reset write pointer when starting new chunk
-    if (dl_chunk_start) dl_buf_wrptr <= 0;
-end
-
-// -- DMA state machine (clk_74a) --
-// Single always block drives ALL target_dataslot signals
-localparam DS_IDLE    = 4'd0;
-localparam DS_DELAY   = 4'd1;
-localparam DS_CHUNK   = 4'd2;
-localparam DS_ACK     = 4'd3;
-localparam DS_WAIT    = 4'd4;
-localparam DS_EMIT    = 4'd5;
-localparam DS_DONE    = 4'd6;
-
-localparam CHUNK_SIZE = 32'd1024;
-
-reg  [3:0] ds_state = DS_IDLE;
-reg [26:0] ds_delay = 0;
-reg [31:0] ds_offset = 0;
-reg [31:0] ds_chunk_bytes = 0;
-reg        ds_slot_seen = 0;    // a dataslot_requestread was received
-reg        dl_chunk_start = 0;
-reg        ds_emit_req = 0;
-reg        ds_done = 0;
-reg [26:0] ds_timeout;
-reg [31:0] ds_file_size = 0;
-reg [31:0] ds_remaining = 0;
-reg [31:0] ds_cur_chunk = 0;
-reg  [1:0] ds_ack_sync = 0;
-
+// No target commands needed — Pocket loads data directly
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
     target_dataslot_write    <= 0;
     target_dataslot_getfile  <= 0;
     target_dataslot_openfile <= 0;
-    dl_chunk_start <= 0;
-
-    // Capture file size from dataslot_requestwrite
-    if (dataslot_requestwrite)
-        ds_file_size <= dataslot_requestwrite_size;
-
-    case (ds_state)
-    DS_IDLE: begin
-        if (dataslot_allcomplete) begin
-            ds_delay <= 27'd111375000; // 1.5 sec at 74.25 MHz
-            ds_state <= DS_DELAY;
-        end
-    end
-
-    DS_DELAY: begin
-        ds_delay <= ds_delay - 1'd1;
-        if (ds_delay == 0) begin
-            ds_offset    <= 0;
-            // Use captured file size, or 64KB max if not captured
-            ds_remaining <= (ds_file_size > 0) ? ds_file_size : 32'd65536;
-            ds_state     <= DS_CHUNK;
-        end
-    end
-
-    DS_CHUNK: begin
-        if (ds_remaining == 0) begin
-            ds_state <= DS_DONE;
-        end else begin
-            // Request next chunk — clamp to remaining bytes
-            dl_chunk_start <= 1;
-            dl_dma_active  <= 1;
-            ds_timeout     <= 27'd74250000;
-            ds_cur_chunk   <= (ds_remaining > CHUNK_SIZE) ? CHUNK_SIZE : ds_remaining;
-            target_dataslot_id         <= 16'd1;
-            target_dataslot_slotoffset <= ds_offset;
-            target_dataslot_bridgeaddr <= 32'h70000000;
-            target_dataslot_length     <= (ds_remaining > CHUNK_SIZE) ? CHUNK_SIZE : ds_remaining;
-            target_dataslot_read       <= 1;
-            ds_state <= DS_ACK;
-        end
-    end
-
-    DS_ACK: begin
-        target_dataslot_read <= 1; // keep asserting until ack'd
-        ds_timeout <= ds_timeout - 1'd1;
-        if (target_dataslot_ack) begin
-            target_dataslot_read <= 0;
-            ds_state <= DS_WAIT;
-        end
-        else if (ds_timeout == 0) begin
-            target_dataslot_read <= 0;
-            dl_dma_active <= 0;
-            ds_state <= DS_DONE;
-        end
-    end
-
-    DS_WAIT: begin
-        ds_timeout <= ds_timeout - 1'd1;
-        if (target_dataslot_done) begin
-            dl_dma_active <= 0;
-            ds_chunk_bytes <= ds_cur_chunk; // use requested size, not wrptr
-            if (target_dataslot_err != 0) begin
-                ds_state <= DS_DONE;
-            end else begin
-                ds_emit_req <= ~ds_emit_req;
-                ds_state    <= DS_EMIT;
-            end
-        end
-        else if (ds_timeout == 0) begin
-            dl_dma_active <= 0;
-            ds_state <= DS_DONE;
-        end
-    end
-
-    DS_EMIT: begin
-        // Synchronize ack toggle from clk_sys domain
-        ds_ack_sync <= {ds_ack_sync[0], ds_emit_ack};
-        if (ds_ack_sync[1] == ds_emit_req) begin
-            ds_offset    <= ds_offset + CHUNK_SIZE;
-            ds_remaining <= (ds_remaining > CHUNK_SIZE) ? ds_remaining - CHUNK_SIZE : 0;
-            ds_state     <= DS_CHUNK;
-        end
-    end
-
-    DS_DONE: begin
-        // One final emit for any remaining bytes
-        if (ds_chunk_bytes > 0) begin
-            ds_emit_req <= ~ds_emit_req;
-            ds_chunk_bytes <= 0;
-        end
-        // Stay done — don't retrigger
-    end
-    endcase
 end
 
-// -- Playback (clk_sys): emit ioctl bytes from buffer --
-reg        ds_emit_ack = 0;
-reg        prg_load_done = 0;  // toggle when PRG playback finishes
-reg [1:0]  emit_state = 0;
-reg [11:0] emit_addr;
-reg [11:0] emit_len;
-reg [24:0] emit_ioctl_addr = 0;  // running address across all chunks
+// data_loader: converts bridge writes at 0x1xxxxxxx into byte-by-byte
+// writes synchronized to clk_sys
+wire        dl_wr;
+wire [27:0] dl_addr;
+wire  [7:0] dl_data;
 
-// Synchronize emit request toggle
-reg [2:0] emit_req_sync;
-wire emit_req_pending = (emit_req_sync[2] != ds_emit_ack);
+data_loader #(
+    .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx
+    .ADDRESS_SIZE(28),
+    .WRITE_MEM_CLOCK_DELAY(4),
+    .OUTPUT_WORD_SIZE(1)
+) data_loader_inst (
+    .clk_74a(clk_74a),
+    .clk_memory(clk_sys),
+    .bridge_wr(bridge_wr),
+    .bridge_endian_little(bridge_endian_little),
+    .bridge_addr(bridge_addr),
+    .bridge_wr_data(bridge_wr_data),
+    .write_en(dl_wr),
+    .write_addr(dl_addr),
+    .write_data(dl_data)
+);
 
+// Track download state via dataslot_requestwrite signal
+reg        dl_downloading = 0;
+reg        dl_downloading_s0, dl_downloading_s1, dl_prev;
+reg        prg_load_done = 0;
+
+always @(posedge clk_74a) begin
+    if (dataslot_requestwrite)
+        dl_downloading <= 1;
+    if (dataslot_allcomplete)
+        dl_downloading <= 0;
+end
+
+// Map data_loader outputs to ioctl signals (clk_sys domain)
 always @(posedge clk_sys) begin
-    emit_req_sync <= {emit_req_sync[1:0], ds_emit_req};
-    ioctl_wr <= 0;
+    dl_downloading_s0 <= dl_downloading;
+    dl_downloading_s1 <= dl_downloading_s0;
+    dl_prev           <= dl_downloading_s1;
 
-    case (emit_state)
-    2'd0: begin
-        ioctl_download <= 0;
-        if (emit_req_pending) begin
-            emit_addr <= 0;
-            emit_len  <= ds_chunk_bytes[11:0];
-            dl_buf_rdptr <= 0;
-            emit_state <= 2'd1;
-        end
-    end
+    ioctl_download <= dl_downloading_s1;
 
-    2'd1: begin
-        // BRAM read latency cycle
-        ioctl_download <= 1;
-        ioctl_index    <= 8'h01; // PRG
-        emit_state <= 2'd2;
-    end
+    ioctl_wr   <= dl_wr;
+    ioctl_addr <= dl_addr[24:0];
+    ioctl_data <= dl_data;
+    ioctl_index <= 8'h01; // PRG
 
-    2'd2: begin
-        ioctl_download <= 1;
-        if (emit_addr < emit_len) begin
-            ioctl_wr         <= 1;
-            ioctl_data       <= dl_buf_rddata;
-            ioctl_addr       <= emit_ioctl_addr;
-            emit_ioctl_addr  <= emit_ioctl_addr + 1'd1;
-            emit_addr        <= emit_addr + 1'd1;
-            dl_buf_rdptr     <= emit_addr + 1'd1;
-        end else begin
-            emit_state <= 2'd3;
-        end
-    end
-
-    2'd3: begin
-        ioctl_download <= 0;
-        ds_emit_ack    <= ds_emit_req;
-        emit_state     <= 2'd0;
-        // Signal auto-RUN after final chunk
-        if (!emit_req_pending) prg_load_done <= ~prg_load_done;
-    end
-    endcase
+    // Detect download completion → trigger auto-RUN
+    if (dl_prev & ~dl_downloading_s1)
+        prg_load_done <= ~prg_load_done;
 end
 
 // ========================================================================
