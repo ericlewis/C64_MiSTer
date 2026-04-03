@@ -572,35 +572,40 @@ data_loader #(
     .write_data(dl_data)
 );
 
-// Track download state via dataslot_requestwrite signal
-reg        dl_downloading = 0;
-reg        dl_downloading_s0, dl_downloading_s1, dl_prev;
+// Track download: only assert ioctl_download when data_loader
+// is actually writing data. This way no-file boot works cleanly.
 reg        prg_load_done = 0;
+reg        dl_ever_wrote = 0;
+reg        dl_wr_prev = 0;
 
-always @(posedge clk_74a) begin
-    if (dataslot_requestwrite)
-        dl_downloading <= 1;
-    if (dataslot_allcomplete)
-        dl_downloading <= 0;
-end
-
-// Map data_loader outputs to ioctl signals (clk_sys domain)
 always @(posedge clk_sys) begin
-    dl_downloading_s0 <= dl_downloading;
-    dl_downloading_s1 <= dl_downloading_s0;
-    dl_prev           <= dl_downloading_s1;
+    dl_wr_prev <= dl_wr;
 
-    ioctl_download <= dl_downloading_s1;
+    // Mark that we received at least one byte
+    if (dl_wr) dl_ever_wrote <= 1;
 
-    ioctl_wr   <= dl_wr;
-    ioctl_addr <= dl_addr[24:0];
-    ioctl_data <= dl_data;
-    ioctl_index <= 8'h01; // PRG
+    // ioctl_download: high from first write until allcomplete syncs low
+    ioctl_download <= dl_ever_wrote;
+    ioctl_wr       <= dl_wr;
+    ioctl_addr     <= dl_addr[24:0];
+    ioctl_data     <= dl_data;
+    ioctl_index    <= 8'h01; // PRG
 
-    // Detect download completion → trigger auto-RUN
-    if (dl_prev & ~dl_downloading_s1)
-        prg_load_done <= ~prg_load_done;
+    // Detect end of download: dl_wr stops and allcomplete has fired
+    // Use a simple timeout: if no dl_wr for ~1M cycles, download is done
+    if (dl_wr) begin
+        dl_timeout_cnt <= 20'd1000000;
+    end else if (dl_ever_wrote && dl_timeout_cnt != 0) begin
+        dl_timeout_cnt <= dl_timeout_cnt - 1'd1;
+        if (dl_timeout_cnt == 1) begin
+            ioctl_download <= 0;
+            dl_ever_wrote  <= 0;
+            prg_load_done  <= ~prg_load_done;
+        end
+    end
 end
+
+reg [19:0] dl_timeout_cnt = 0;
 
 // ========================================================================
 //  C64 Core

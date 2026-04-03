@@ -5,7 +5,7 @@
       {
         "id": 1,
         "name": "Load Game",
-        "required": true,
+        "required": false,
         "parameters": "0x10000000",
         "extensions": ["prg", "crt"]
       }
