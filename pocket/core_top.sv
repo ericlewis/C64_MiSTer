@@ -551,48 +551,19 @@ wire load_prg = ioctl_index == 8'h01;
 wire load_crt = ioctl_index == 8'h41;
 wire load_rom = ioctl_index == 8'd8;
 
-// Track download state (clk_74a domain)
-reg        dl_active_74 = 0;
-reg [24:0] dl_addr_74 = 0;
-reg  [7:0] dl_index_74 = 0;
-reg [24:0] dl_total_74 = 0;  // total bytes captured
+// ---- Data loading via target_dataslot_read (pull-based) ----
+//
+// The Pocket does NOT push data. The core must REQUEST it:
+// 1. Pocket signals dataslot_requestread with slot ID + size in datatable
+// 2. Core uses target_dataslot_read to DMA chunks into bridge addr 0x70000000
+// 3. Core captures bridge writes at 0x70000000 into BRAM
+// 4. After all chunks loaded, core plays back BRAM → ioctl pipeline
 
-// Write side (clk_74a): track state + capture ALL bridge writes into BRAM
-reg [15:0] dl_bram_wraddr = 0;
+// BRAM buffer for file data (64KB max)
+reg  [7:0] dl_bram [0:65535];
+reg [15:0] dl_bram_wraddr;
 reg  [7:0] dl_bram_wrdata;
 reg        dl_bram_wren = 0;
-
-always @(posedge clk_74a) begin
-    target_dataslot_read     <= 0;
-    target_dataslot_write    <= 0;
-    target_dataslot_getfile  <= 0;
-    target_dataslot_openfile <= 0;
-    dl_bram_wren <= 0;
-
-    if (dataslot_requestread) begin
-        dl_active_74 <= 1;
-        dl_addr_74   <= 0;
-        dl_total_74  <= 0;
-        dl_bram_wraddr <= 0;
-        dl_index_74  <= 8'h01; // PRG
-    end
-
-    if (dataslot_allcomplete)
-        dl_active_74 <= 0;
-
-    // Capture bridge writes into BRAM — accept ANY address except 0xF8 command space
-    // The Pocket might write to 0x00, 0x10, 0x20, etc. — we capture all of them
-    if (bridge_wr && dl_active_74 && bridge_addr[31:24] != 8'hF8) begin
-        dl_bram_wrdata <= bridge_wr_data[7:0];
-        dl_bram_wren   <= 1;
-        dl_bram_wraddr <= dl_addr_74[15:0];
-        dl_addr_74     <= dl_addr_74 + 1'd1;
-        dl_total_74    <= dl_total_74 + 1'd1;
-    end
-end
-
-// Dual-clock BRAM (64KB max file size)
-reg  [7:0] dl_bram [0:65535];
 reg  [7:0] dl_bram_rddata;
 reg [15:0] dl_bram_rdaddr;
 
@@ -602,56 +573,165 @@ always @(posedge clk_74a)
 always @(posedge clk_sys)
     dl_bram_rddata <= dl_bram[dl_bram_rdaddr];
 
-// Read side (clk_sys): after download, emit ioctl bytes
-// Includes timeout — if download doesn't complete in ~2 seconds, abort
+// Capture bridge writes at 0x7xxxxxxx into BRAM
+// Pocket writes 32-bit words — we unpack to 4 bytes over 4 cycles
+reg [1:0]  dl_wr_phase = 0;
+reg [15:0] dl_wr_base;
+reg [31:0] dl_wr_word;
+
+always @(posedge clk_74a) begin
+    dl_bram_wren <= 0;
+
+    if (bridge_wr && bridge_addr[31:28] == 4'h7) begin
+        // First byte immediately
+        dl_bram_wraddr <= {bridge_addr[9:2], 2'b00};
+        dl_bram_wrdata <= bridge_wr_data[7:0];
+        dl_bram_wren   <= 1;
+        // Save rest for next 3 cycles
+        dl_wr_word  <= bridge_wr_data;
+        dl_wr_base  <= {bridge_addr[9:2], 2'b00};
+        dl_wr_phase <= 2'd1;
+    end
+    else if (dl_wr_phase != 0) begin
+        dl_bram_wren <= 1;
+        case (dl_wr_phase)
+            2'd1: begin dl_bram_wraddr <= dl_wr_base + 16'd1; dl_bram_wrdata <= dl_wr_word[15:8];  end
+            2'd2: begin dl_bram_wraddr <= dl_wr_base + 16'd2; dl_bram_wrdata <= dl_wr_word[23:16]; end
+            2'd3: begin dl_bram_wraddr <= dl_wr_base + 16'd3; dl_bram_wrdata <= dl_wr_word[31:24]; end
+        endcase
+        dl_wr_phase <= (dl_wr_phase == 2'd3) ? 2'd0 : dl_wr_phase + 1'd1;
+    end
+end
+
+// DMA state machine (clk_74a domain)
+// Requests 1KB chunks from Pocket, which writes them to 0x70000000
+localparam DL_IDLE      = 3'd0;
+localparam DL_READ_SIZE = 3'd1;
+localparam DL_REQUEST   = 3'd2;
+localparam DL_WAIT      = 3'd3;
+localparam DL_NEXT      = 3'd4;
+localparam DL_DONE      = 3'd5;
+
+localparam DMA_BRIDGE_ADDR = 32'h70000000;
+localparam DMA_CHUNK       = 32'd1024;
+
+reg  [2:0] dl_state = DL_IDLE;
+reg [15:0] dl_slot_id;
+reg [31:0] dl_file_offset;
+reg [31:0] dl_file_remaining;
+reg [24:0] dl_total_bytes = 0;
+reg        dl_active_74 = 0;
+reg  [7:0] dl_index_74 = 0;
+
+always @(posedge clk_74a) begin
+    target_dataslot_read     <= 0;
+    target_dataslot_write    <= 0;
+    target_dataslot_getfile  <= 0;
+    target_dataslot_openfile <= 0;
+
+    case (dl_state)
+    DL_IDLE: begin
+        if (dataslot_requestread) begin
+            dl_slot_id <= dataslot_requestread_id;
+            dl_index_74 <= 8'h01; // PRG
+            dl_state <= DL_READ_SIZE;
+        end
+    end
+
+    DL_READ_SIZE: begin
+        // Read file size from datatable
+        // The Pocket populates datatable with slot info
+        // For now, assume a reasonable max and rely on error to stop
+        dl_file_offset    <= 0;
+        dl_file_remaining <= 32'd65536; // 64KB max
+        dl_total_bytes    <= 0;
+        dl_active_74      <= 1;
+        dl_state <= DL_REQUEST;
+    end
+
+    DL_REQUEST: begin
+        if (dl_file_remaining == 0) begin
+            dl_state <= DL_DONE;
+        end else begin
+            // Request a chunk from the Pocket
+            target_dataslot_id         <= dl_slot_id;
+            target_dataslot_slotoffset <= dl_file_offset;
+            target_dataslot_bridgeaddr <= DMA_BRIDGE_ADDR;
+            target_dataslot_length     <= (dl_file_remaining > DMA_CHUNK) ? DMA_CHUNK : dl_file_remaining;
+            target_dataslot_read       <= 1;
+            dl_state <= DL_WAIT;
+        end
+    end
+
+    DL_WAIT: begin
+        if (target_dataslot_done) begin
+            if (target_dataslot_err != 0) begin
+                // Error or EOF — done
+                dl_state <= DL_DONE;
+            end else begin
+                dl_state <= DL_NEXT;
+            end
+        end
+    end
+
+    DL_NEXT: begin
+        // Advance to next chunk
+        dl_file_offset    <= dl_file_offset + DMA_CHUNK;
+        dl_file_remaining <= (dl_file_remaining > DMA_CHUNK) ? dl_file_remaining - DMA_CHUNK : 0;
+        dl_total_bytes    <= dl_total_bytes + DMA_CHUNK;
+        dl_state <= DL_REQUEST;
+    end
+
+    DL_DONE: begin
+        dl_active_74 <= 0;
+        dl_state <= DL_IDLE;
+    end
+    endcase
+
+    if (dataslot_allcomplete && dl_state != DL_IDLE) begin
+        dl_state <= DL_DONE;
+    end
+end
+
+// Playback: after DMA completes, read BRAM and emit ioctl (clk_sys domain)
 reg [1:0]  dl_phase = 0;
 reg [24:0] dl_playback_addr;
 reg [24:0] dl_playback_len;
-reg        dl_active_s0, dl_active_s1, dl_active_prev;
-reg [25:0] dl_timeout;
+reg        dl_active_s0 = 0, dl_active_s1 = 0, dl_active_prev = 0;
 
 always @(posedge clk_sys) begin
-    dl_active_s0 <= dl_active_74;
-    dl_active_s1 <= dl_active_s0;
+    dl_active_s0   <= dl_active_74;
+    dl_active_s1   <= dl_active_s0;
     dl_active_prev <= dl_active_s1;
 
-    ioctl_wr <= 0;
+    ioctl_wr    <= 0;
     ioctl_index <= dl_index_74;
 
     case (dl_phase)
-    2'd0: begin // Idle
+    2'd0: begin
         ioctl_download <= 0;
         if (dl_active_s1 & ~dl_active_prev) begin
+            // DMA starting
             dl_phase <= 2'd1;
             ioctl_download <= 1;
-            ioctl_addr <= 0;
-            dl_timeout <= 26'd63000000; // ~2 sec at 32 MHz
         end
     end
 
-    2'd1: begin // Downloading — wait for completion or timeout
+    2'd1: begin
         ioctl_download <= 1;
-
-        if (dl_timeout)
-            dl_timeout <= dl_timeout - 1'd1;
-
         if (~dl_active_s1 & dl_active_prev) begin
-            // Download finished normally — start playback
+            // DMA finished — start playback
             dl_playback_addr <= 0;
-            dl_playback_len  <= dl_total_74;
+            dl_playback_len  <= dl_total_bytes;
             dl_bram_rdaddr   <= 0;
-            if (dl_total_74 > 0)
+            if (dl_total_bytes > 0)
                 dl_phase <= 2'd2;
             else
-                dl_phase <= 2'd3; // nothing received, skip
-        end
-        else if (dl_timeout == 0) begin
-            // Timeout — abort download, boot normally
-            dl_phase <= 2'd3;
+                dl_phase <= 2'd3;
         end
     end
 
-    2'd2: begin // Playback — read BRAM and emit ioctl writes
+    2'd2: begin
         ioctl_download <= 1;
         if (dl_playback_addr < dl_playback_len) begin
             ioctl_wr   <= 1;
@@ -664,7 +744,7 @@ always @(posedge clk_sys) begin
         end
     end
 
-    2'd3: begin // Done
+    2'd3: begin
         ioctl_download <= 0;
         dl_phase <= 2'd0;
     end
