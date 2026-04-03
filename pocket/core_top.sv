@@ -630,15 +630,14 @@ always @(posedge clk_74a) begin
     target_dataslot_openfile <= 0;
     dl_chunk_start <= 0;
 
-    // With deferload, Pocket sends dataslot_update (not requestread)
-    if (dataslot_requestread || dataslot_update) ds_slot_seen <= 1;
-
     case (ds_state)
     DS_IDLE: begin
-        if (dataslot_allcomplete && ds_slot_seen) begin
-            ds_slot_seen <= 0;
-            ds_delay     <= 27'd111375000; // 1.5 sec at 74.25 MHz
-            ds_state     <= DS_DELAY;
+        // Trigger on dataslot_allcomplete directly.
+        // With deferload, the Pocket writes slot info to BRAM then
+        // sends allcomplete — no requestread or update signals.
+        if (dataslot_allcomplete) begin
+            ds_delay <= 27'd111375000; // 1.5 sec at 74.25 MHz
+            ds_state <= DS_DELAY;
         end
     end
 
