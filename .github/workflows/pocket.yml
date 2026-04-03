@@ -41,6 +41,7 @@ jobs:
 
       - name: Reverse bitstream
         run: |
+          sudo chown -R runner:runner pocket/output_files/
           python3 pocket/reverse_bitstream.py \
             pocket/output_files/C64_Pocket.rbf \
             pocket/output_files/bitstream.rbf_r
