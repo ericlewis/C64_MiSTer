@@ -532,188 +532,20 @@ wire load_prg = ioctl_index == 8'h01;
 wire load_crt = ioctl_index == 8'h41;
 wire load_rom = ioctl_index == 8'd8;
 
-// Data loading via deferred slot + target_dataslot_read DMA
-// (target commands are driven by DMA state machine below)
-
-// ---- PRG loading via deferred data slot + target_dataslot_read ----
-//
-// 1. C64 boots to BASIC (reset is completely independent)
-// 2. After boot, DMA pulls PRG from Pocket into BRAM at 0x70000000
-// 3. BRAM contents played back through ioctl → PRG injected into C64 RAM
-//
-// CRITICAL: ioctl_download is NEVER asserted during boot. The DMA only
-// starts after a 1-second delay from dataslot_allcomplete.
-
-// BRAM for file data (64KB)
-reg  [7:0] dl_bram [0:65535];
-reg [15:0] dl_bram_wraddr;
-reg  [7:0] dl_bram_wrdata;
-reg        dl_bram_wren = 0;
-reg  [7:0] dl_bram_rddata;
-reg [15:0] dl_bram_rdaddr;
-
-always @(posedge clk_74a)
-    if (dl_bram_wren) dl_bram[dl_bram_wraddr] <= dl_bram_wrdata;
-always @(posedge clk_sys)
-    dl_bram_rddata <= dl_bram[dl_bram_rdaddr];
-
-// Capture bridge writes at 0x7xxxxxxx (where Pocket DMA puts data)
-reg [1:0]  dl_wr_phase = 0;
-reg [15:0] dl_wr_base;
-reg [31:0] dl_wr_word;
-
-always @(posedge clk_74a) begin
-    dl_bram_wren <= 0;
-    if (bridge_wr && bridge_addr[31:28] == 4'h7 && dl_busy) begin
-        dl_bram_wraddr <= {bridge_addr[9:2], 2'b00};
-        dl_bram_wrdata <= bridge_wr_data[7:0];
-        dl_bram_wren   <= 1;
-        dl_wr_word  <= bridge_wr_data;
-        dl_wr_base  <= {bridge_addr[9:2], 2'b00};
-        dl_wr_phase <= 2'd1;
-    end else if (dl_wr_phase != 0) begin
-        dl_bram_wren <= 1;
-        case (dl_wr_phase)
-            2'd1: begin dl_bram_wraddr <= dl_wr_base + 16'd1; dl_bram_wrdata <= dl_wr_word[15:8];  end
-            2'd2: begin dl_bram_wraddr <= dl_wr_base + 16'd2; dl_bram_wrdata <= dl_wr_word[23:16]; end
-            2'd3: begin dl_bram_wraddr <= dl_wr_base + 16'd3; dl_bram_wrdata <= dl_wr_word[31:24]; end
-        endcase
-        dl_wr_phase <= (dl_wr_phase == 2'd3) ? 2'd0 : dl_wr_phase + 1'd1;
-    end
-end
-
-// DMA state machine (clk_74a domain)
-localparam DL_IDLE    = 3'd0;
-localparam DL_DELAY   = 3'd1;
-localparam DL_REQUEST = 3'd2;
-localparam DL_WAIT    = 3'd3;
-localparam DL_NEXT    = 3'd4;
-localparam DL_DONE    = 3'd5;
-
-reg  [2:0]  dl_state = DL_IDLE;
-reg [26:0]  dl_delay_cnt;
-reg         dl_slot_pending = 0;
-reg [31:0]  dl_offset;
-reg [31:0]  dl_remaining;
-reg [24:0]  dl_total = 0;
-reg         dl_busy = 0;
-
+// No data loading — stub all signals
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
     target_dataslot_write    <= 0;
     target_dataslot_getfile  <= 0;
     target_dataslot_openfile <= 0;
-
-    // Track if a slot was actually requested (deferload)
-    if (dataslot_requestread) dl_slot_pending <= 1;
-
-    case (dl_state)
-    DL_IDLE: begin
-        // Only start DMA if a slot was actually requested by the Pocket
-        if (dataslot_allcomplete && dl_slot_pending) begin
-            dl_slot_pending <= 0;
-            dl_state     <= DL_DELAY;
-            dl_delay_cnt <= 27'd74250000; // 1 second delay
-        end
-    end
-
-    DL_DELAY: begin
-        dl_delay_cnt <= dl_delay_cnt - 1'd1;
-        if (dl_delay_cnt == 0) begin
-            dl_offset    <= 0;
-            dl_remaining <= 32'd65536;
-            dl_total     <= 0;
-            dl_busy      <= 1;
-            dl_state     <= DL_REQUEST;
-        end
-    end
-
-    DL_REQUEST: begin
-        if (dl_remaining == 0) begin
-            dl_state <= DL_DONE;
-        end else begin
-            target_dataslot_id         <= 16'd1; // slot 1
-            target_dataslot_slotoffset <= dl_offset;
-            target_dataslot_bridgeaddr <= 32'h70000000;
-            target_dataslot_length     <= (dl_remaining > 1024) ? 1024 : dl_remaining;
-            target_dataslot_read       <= 1;
-            dl_state <= DL_WAIT;
-        end
-    end
-
-    DL_WAIT: begin
-        if (target_dataslot_done) begin
-            if (target_dataslot_err != 0)
-                dl_state <= DL_DONE; // error or EOF
-            else
-                dl_state <= DL_NEXT;
-        end
-    end
-
-    DL_NEXT: begin
-        dl_offset    <= dl_offset + 1024;
-        dl_remaining <= (dl_remaining > 1024) ? dl_remaining - 1024 : 0;
-        dl_total     <= dl_total + 1024;
-        dl_state     <= DL_REQUEST;
-    end
-
-    DL_DONE: begin
-        dl_busy  <= 0;
-        dl_state <= DL_IDLE; // stay idle, don't re-trigger
-    end
-    endcase
 end
-
-// Playback (clk_sys): AFTER DMA completes, emit ioctl bytes
-reg [1:0]  dl_play = 0;
-reg [24:0] dl_play_addr;
-reg [24:0] dl_play_len;
-reg        dl_busy_s0 = 0, dl_busy_s1 = 0, dl_busy_prev = 0;
 
 always @(posedge clk_sys) begin
-    dl_busy_s0   <= dl_busy;
-    dl_busy_s1   <= dl_busy_s0;
-    dl_busy_prev <= dl_busy_s1;
-    ioctl_wr <= 0;
-
-    case (dl_play)
-    2'd0: begin
-        ioctl_download <= 0;
-        // Detect falling edge of dl_busy = DMA complete
-        if (dl_busy_prev & ~dl_busy_s1 & dl_total > 0) begin
-            dl_play_addr <= 0;
-            dl_play_len  <= dl_total;
-            dl_bram_rdaddr <= 0;
-            dl_play <= 2'd1;
-        end
-    end
-
-    2'd1: begin
-        // One cycle for BRAM read latency
-        dl_play <= 2'd2;
-        ioctl_download <= 1;
-        ioctl_index <= 8'h01; // PRG
-    end
-
-    2'd2: begin
-        ioctl_download <= 1;
-        if (dl_play_addr < dl_play_len) begin
-            ioctl_wr   <= 1;
-            ioctl_data <= dl_bram_rddata;
-            ioctl_addr <= dl_play_addr;
-            dl_play_addr   <= dl_play_addr + 1'd1;
-            dl_bram_rdaddr <= dl_play_addr[15:0] + 1'd1;
-        end else begin
-            dl_play <= 2'd3;
-        end
-    end
-
-    2'd3: begin
-        ioctl_download <= 0;
-        dl_play <= 2'd0;
-    end
-    endcase
+    ioctl_wr       <= 0;
+    ioctl_download <= 0;
 end
+
+// TODO: PRG loading will be added once the DMA mechanism is proven
 
 // ========================================================================
 //  C64 Core
