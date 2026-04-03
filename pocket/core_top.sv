@@ -564,7 +564,7 @@ reg [31:0] dl_wr_word;
 
 always @(posedge clk_74a) begin
     dl_bram_wren <= 0;
-    if (bridge_wr && bridge_addr[31:28] == 4'h7) begin
+    if (bridge_wr && bridge_addr[31:28] == 4'h7 && dl_busy) begin
         dl_bram_wraddr <= {bridge_addr[9:2], 2'b00};
         dl_bram_wrdata <= bridge_wr_data[7:0];
         dl_bram_wren   <= 1;
