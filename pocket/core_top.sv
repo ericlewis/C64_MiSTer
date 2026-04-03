@@ -573,7 +573,7 @@ wire  [7:0] dl_data;
 data_loader #(
     .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx (matches data.json address)
     .ADDRESS_SIZE(28),
-    .WRITE_MEM_CLOCK_DELAY(4),
+    .WRITE_MEM_CLOCK_DELAY(32),   // slow down to match io_cycle rate (~32 clk_sys cycles)
     .OUTPUT_WORD_SIZE(1)
 ) data_loader_inst (
     .clk_74a(clk_74a),
