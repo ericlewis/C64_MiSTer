@@ -555,8 +555,9 @@ wire load_rom = ioctl_index == 8'd8;
 reg        dl_active_74 = 0;
 reg [24:0] dl_addr_74 = 0;
 reg  [7:0] dl_index_74 = 0;
+reg [24:0] dl_total_74 = 0;  // total bytes captured
 
-// Write side (clk_74a): track state + capture bridge writes into BRAM
+// Write side (clk_74a): track state + capture ALL bridge writes into BRAM
 reg [15:0] dl_bram_wraddr = 0;
 reg  [7:0] dl_bram_wrdata;
 reg        dl_bram_wren = 0;
@@ -571,6 +572,7 @@ always @(posedge clk_74a) begin
     if (dataslot_requestread) begin
         dl_active_74 <= 1;
         dl_addr_74   <= 0;
+        dl_total_74  <= 0;
         dl_bram_wraddr <= 0;
         dl_index_74  <= 8'h01; // PRG
     end
@@ -578,14 +580,14 @@ always @(posedge clk_74a) begin
     if (dataslot_allcomplete)
         dl_active_74 <= 0;
 
-    // Capture bridge writes into BRAM
-    if (bridge_wr && dl_active_74 &&
-        bridge_addr[31:28] != 4'hF &&
-        bridge_addr[31:28] != 4'h0) begin
+    // Capture bridge writes into BRAM — accept ANY address except 0xF8 command space
+    // The Pocket might write to 0x00, 0x10, 0x20, etc. — we capture all of them
+    if (bridge_wr && dl_active_74 && bridge_addr[31:24] != 8'hF8) begin
         dl_bram_wrdata <= bridge_wr_data[7:0];
         dl_bram_wren   <= 1;
         dl_bram_wraddr <= dl_addr_74[15:0];
         dl_addr_74     <= dl_addr_74 + 1'd1;
+        dl_total_74    <= dl_total_74 + 1'd1;
     end
 end
 
@@ -601,10 +603,12 @@ always @(posedge clk_sys)
     dl_bram_rddata <= dl_bram[dl_bram_rdaddr];
 
 // Read side (clk_sys): after download, emit ioctl bytes
-reg [1:0]  dl_phase = 0; // 0=idle, 1=downloading, 2=playback, 3=done
+// Includes timeout — if download doesn't complete in ~2 seconds, abort
+reg [1:0]  dl_phase = 0;
 reg [24:0] dl_playback_addr;
 reg [24:0] dl_playback_len;
 reg        dl_active_s0, dl_active_s1, dl_active_prev;
+reg [25:0] dl_timeout;
 
 always @(posedge clk_sys) begin
     dl_active_s0 <= dl_active_74;
@@ -618,25 +622,37 @@ always @(posedge clk_sys) begin
     2'd0: begin // Idle
         ioctl_download <= 0;
         if (dl_active_s1 & ~dl_active_prev) begin
-            // Download starting
             dl_phase <= 2'd1;
             ioctl_download <= 1;
             ioctl_addr <= 0;
+            dl_timeout <= 26'd63000000; // ~2 sec at 32 MHz
         end
     end
 
-    2'd1: begin // Downloading — wait for completion
+    2'd1: begin // Downloading — wait for completion or timeout
         ioctl_download <= 1;
+
+        if (dl_timeout)
+            dl_timeout <= dl_timeout - 1'd1;
+
         if (~dl_active_s1 & dl_active_prev) begin
-            // Download finished — start playback from BRAM
+            // Download finished normally — start playback
             dl_playback_addr <= 0;
-            dl_playback_len  <= dl_addr_74; // total bytes received
+            dl_playback_len  <= dl_total_74;
             dl_bram_rdaddr   <= 0;
-            dl_phase <= 2'd2;
+            if (dl_total_74 > 0)
+                dl_phase <= 2'd2;
+            else
+                dl_phase <= 2'd3; // nothing received, skip
+        end
+        else if (dl_timeout == 0) begin
+            // Timeout — abort download, boot normally
+            dl_phase <= 2'd3;
         end
     end
 
     2'd2: begin // Playback — read BRAM and emit ioctl writes
+        ioctl_download <= 1;
         if (dl_playback_addr < dl_playback_len) begin
             ioctl_wr   <= 1;
             ioctl_data <= dl_bram_rddata;
