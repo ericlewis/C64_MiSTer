@@ -481,42 +481,23 @@ sdram sdram_inst (
 
 wire ntsc = status[2];
 
-// Reset logic — the key issue is that clk_sys only runs when PLL is locked,
-// so we can't use !pll_core_locked as a reset trigger on clk_sys.
-// Instead, use an explicit boot counter that starts high.
+// Simple reset: boot counter + manual reset via status[0]
+// Completely independent of download state — C64 always boots.
 reg        c64_reset_n = 0;
-reg        reset_wait = 0;
-reg [19:0] reset_counter = 20'd200000;  // Start in reset
-reg        old_download_r = 0;
-reg        do_erase = 1;
+reg [19:0] reset_counter = 20'd200000;
 
 always @(posedge clk_sys) begin
-    c64_reset_n  <= (reset_counter == 0);
-    old_download_r <= ioctl_download;
+    c64_reset_n <= (reset_counter == 0);
 
-    if (status[0]) begin
-        do_erase <= 1;
+    if (status[0])
         reset_counter <= 20'd200000;
-    end
-    else if (~old_download_r & ioctl_download & load_prg) begin
-        do_erase <= 1;
-        reset_wait <= 1;
-        reset_counter <= 20'd255;
-    end
-    else if (ioctl_download & load_rom) begin
-        do_erase <= 1;
-        reset_counter <= 20'd255;
-    end
-    else if (ioctl_download & ~reset_wait) ;
-    else if (erasing) force_erase <= 0;
-    else if (reset_counter == 0) begin
-        do_erase <= 0;
-        if (reset_wait && c64_addr == 'hFFCF) reset_wait <= 0;
-    end
-    else begin
+    else if (reset_counter != 0) begin
         reset_counter <= reset_counter - 1'd1;
-        if (reset_counter == 20'd100 && do_erase) force_erase <= 1;
+        // Trigger RAM erase near end of reset
+        if (reset_counter == 20'd100) force_erase <= 1;
     end
+    else
+        force_erase <= 0;
 end
 
 // ========================================================================
@@ -622,6 +603,8 @@ reg [31:0] dl_file_remaining;
 reg [24:0] dl_total_bytes = 0;
 reg        dl_active_74 = 0;
 reg  [7:0] dl_index_74 = 0;
+reg        dl_boot_pending = 0;  // Set when deferred slot is ready
+reg [25:0] dl_boot_delay = 0;    // Delay before starting DMA
 
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
@@ -629,12 +612,24 @@ always @(posedge clk_74a) begin
     target_dataslot_getfile  <= 0;
     target_dataslot_openfile <= 0;
 
+    // When Pocket signals a deferred slot is ready, mark it pending
+    if (dataslot_allcomplete && !dl_boot_pending) begin
+        dl_boot_pending <= 1;
+        dl_boot_delay   <= 26'd37125000; // ~0.5 sec at 74.25 MHz (let C64 boot first)
+    end
+
+    // Count down the boot delay
+    if (dl_boot_pending && dl_boot_delay != 0)
+        dl_boot_delay <= dl_boot_delay - 1'd1;
+
     case (dl_state)
     DL_IDLE: begin
-        if (dataslot_requestread) begin
-            dl_slot_id <= dataslot_requestread_id;
-            dl_index_74 <= 8'h01; // PRG
-            dl_state <= DL_READ_SIZE;
+        // Start DMA after boot delay expires
+        if (dl_boot_pending && dl_boot_delay == 0) begin
+            dl_boot_pending <= 0;
+            dl_slot_id  <= 16'd1;  // Slot 1 = PRG/CRT
+            dl_index_74 <= 8'h01;  // PRG
+            dl_state    <= DL_READ_SIZE;
         end
     end
 
