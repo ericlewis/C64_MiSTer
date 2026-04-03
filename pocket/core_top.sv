@@ -623,6 +623,7 @@ reg [26:0] ds_timeout;
 reg [31:0] ds_file_size = 0;
 reg [31:0] ds_remaining = 0;
 reg [31:0] ds_cur_chunk = 0;
+reg  [1:0] ds_ack_sync = 0;
 
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
@@ -703,9 +704,11 @@ always @(posedge clk_74a) begin
     end
 
     DS_EMIT: begin
-        if (ds_emit_ack == ds_emit_req) begin
-            ds_offset    <= ds_offset + ds_cur_chunk;
-            ds_remaining <= ds_remaining - ds_cur_chunk;
+        // Synchronize ack toggle from clk_sys domain
+        ds_ack_sync <= {ds_ack_sync[0], ds_emit_ack};
+        if (ds_ack_sync[1] == ds_emit_req) begin
+            ds_offset    <= ds_offset + CHUNK_SIZE;
+            ds_remaining <= (ds_remaining > CHUNK_SIZE) ? ds_remaining - CHUNK_SIZE : 0;
             ds_state     <= DS_CHUNK;
         end
     end
