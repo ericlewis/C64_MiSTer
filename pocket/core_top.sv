@@ -486,16 +486,31 @@ wire ntsc = status[2];
 reg        c64_reset_n = 0;
 reg [19:0] reset_counter = 20'd200000;
 
+reg boot_erase_done = 0; // tracks if initial boot erase has completed
+
 always @(posedge clk_sys) begin
     c64_reset_n <= (reset_counter == 0) & ~ioctl_download;
 
-    if (status[0] | ioctl_download)
+    if (status[0]) begin
+        // Manual reset — re-erase
         reset_counter <= 20'd200000;
+        boot_erase_done <= 0;
+    end
+    else if (ioctl_download) begin
+        // Hold reset during loading but DON'T restart erase counter
+        // PRG data is being written to RAM — don't erase it after
+        if (!boot_erase_done)
+            reset_counter <= 20'd200000; // first boot, haven't erased yet
+    end
     else if (erasing)
-        force_erase <= 0;  // stall counter while erase runs
+        force_erase <= 0;
     else if (reset_counter != 0) begin
         reset_counter <= reset_counter - 1'd1;
-        if (reset_counter == 20'd100) force_erase <= 1;
+        // Only erase on first boot, not after PRG load
+        if (reset_counter == 20'd100 && !boot_erase_done) begin
+            force_erase <= 1;
+            boot_erase_done <= 1;
+        end
     end
     else
         force_erase <= 0;
