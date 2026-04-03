@@ -620,6 +620,7 @@ reg        ds_slot_seen = 0;    // a dataslot_requestread was received
 reg        dl_chunk_start = 0;
 reg        ds_emit_req = 0;     // toggle to signal clk_sys to play back
 reg        ds_done = 0;
+reg [26:0] ds_timeout;
 
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
@@ -652,6 +653,7 @@ always @(posedge clk_74a) begin
         // Request next 1KB chunk
         dl_chunk_start <= 1;
         dl_dma_active  <= 1;
+        ds_timeout     <= 27'd74250000; // 1 second timeout
         target_dataslot_id         <= 16'd1;
         target_dataslot_slotoffset <= ds_offset;
         target_dataslot_bridgeaddr <= 32'h70000000;
@@ -661,17 +663,21 @@ always @(posedge clk_74a) begin
     end
 
     DS_WAIT: begin
+        ds_timeout <= ds_timeout - 1'd1;
         if (target_dataslot_done) begin
             dl_dma_active <= 0;
-            ds_chunk_bytes <= dl_buf_wrptr; // how many bytes we got
+            ds_chunk_bytes <= dl_buf_wrptr;
             if (target_dataslot_err != 0 || dl_buf_wrptr == 0) begin
-                // Error or no data → done
                 ds_state <= DS_DONE;
             end else begin
-                // Signal playback, then request next chunk
                 ds_emit_req <= ~ds_emit_req;
                 ds_state    <= DS_EMIT;
             end
+        end
+        else if (ds_timeout == 0) begin
+            // Timeout — DMA command didn't complete, give up
+            dl_dma_active <= 0;
+            ds_state <= DS_DONE;
         end
     end
 
