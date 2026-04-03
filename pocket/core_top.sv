@@ -695,7 +695,7 @@ end
 
 // -- Playback (clk_sys): emit ioctl bytes from buffer --
 reg        ds_emit_ack = 0;
-reg        prg_done = 0;  // signals key injection block to auto-RUN
+reg        prg_load_done = 0;  // toggle when PRG playback finishes
 reg [1:0]  emit_state = 0;
 reg [11:0] emit_addr;
 reg [11:0] emit_len;
@@ -1148,6 +1148,7 @@ reg        erasing = 0;
 reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
 reg [15:0] inj_end;
+reg        prg_done_prev = 0;
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
@@ -1262,8 +1263,9 @@ always @(posedge clk_sys) begin
     end
 
     // BASIC pointer initialization after PRG load
-    // Sets up BASIC pointers so RUN works
-    if (old_download & ~ioctl_download & load_prg & ~inj_meminit) begin
+    // Detect prg_load_done toggle → start meminit
+    prg_done_prev <= prg_load_done;
+    if (prg_load_done != prg_done_prev && ~inj_meminit) begin
         inj_meminit <= 1;
         ioctl_load_addr <= 0;
     end
