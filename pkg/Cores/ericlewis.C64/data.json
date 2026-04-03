@@ -6,7 +6,7 @@
         "id": 1,
         "name": "Load Game",
         "required": false,
-        "parameters": "0x10000000",
+        "parameters": "0x20000000",
         "extensions": ["prg", "crt"]
       }
     ]

@@ -556,7 +556,7 @@ wire [27:0] dl_addr;
 wire  [7:0] dl_data;
 
 data_loader #(
-    .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx
+    .ADDRESS_MASK_UPPER_4(4'h2),  // captures 0x2xxxxxxx
     .ADDRESS_SIZE(28),
     .WRITE_MEM_CLOCK_DELAY(4),
     .OUTPUT_WORD_SIZE(1)
