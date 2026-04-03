@@ -742,8 +742,10 @@ always @(posedge clk_sys) begin
 
     2'd3: begin
         ioctl_download <= 0;
-        ds_emit_ack    <= ds_emit_req; // signal DMA we're done
+        ds_emit_ack    <= ds_emit_req;
         emit_state     <= 2'd0;
+        // Trigger auto-RUN after final chunk
+        if (!emit_req_pending) start_strk <= 1;
     end
     endcase
 end
@@ -762,6 +764,50 @@ wire [17:0] audio_l, audio_r;
 wire  [7:0] r, g, b;
 wire        hsync, vsync;
 
+// Auto-RUN key injection after PRG load
+// Injects: R, U, N, RETURN
+reg        start_strk = 0;
+reg [10:0] key = 0;
+reg        reset_keys = 0;
+
+always @(posedge clk_sys) begin
+    reg [3:0] act = 0;
+    int       to;
+
+    reset_keys <= 0;
+
+    if (~c64_reset_n) act <= 0;
+
+    if (act) begin
+        to <= to + 1;
+        if (to > 1280000) begin
+            to <= 0;
+            act <= act + 1'd1;
+            case (act)
+                // PS/2 scan codes for R-U-N-RETURN
+                1: key <= 'h2d;  // R
+                3: key <= 'h3c;  // U
+                5: key <= 'h31;  // N
+                7: key <= 'h5a;  // RETURN
+                9: key <= 'h00;
+               10: act <= 0;
+            endcase
+            key[9]  <= act[0];
+            key[10] <= (act >= 9) ? 1'b0 : ~key[10];
+        end
+    end
+    else begin
+        to <= 0;
+        key <= 0;
+    end
+
+    if (start_strk) begin
+        act <= 1;
+        key <= 0;
+        start_strk <= 0;
+    end
+end
+
 fpga64_sid_iec fpga64 (
     .clk32      (clk_sys),
     .reset_n    (c64_reset_n),
@@ -770,8 +816,8 @@ fpga64_sid_iec fpga64 (
     .bios       (status[15:14]),
     .turbo_mode ({status[47], status[46]}),
     .turbo_speed(status[49:48]),
-    .ps2_key    (11'd0),
-    .kbd_reset  (~c64_reset_n),
+    .ps2_key    (key),
+    .kbd_reset  (~c64_reset_n | reset_keys),
     .shift_mod  (2'b11),
     .ramAddr    (c64_addr),
     .ramDout    (c64_data_out),
@@ -1098,6 +1144,9 @@ reg [24:0] ioctl_load_addr;
 reg        ioctl_req_wr;
 reg        force_erase = 0;
 reg        erasing = 0;
+reg        inj_meminit = 0;
+reg  [7:0] inj_meminit_data;
+reg [15:0] inj_end;
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
@@ -1121,6 +1170,8 @@ always @(posedge clk_sys) begin
             ioctl_load_addr <= ioctl_load_addr + 1'b1;
             if (erasing)
                 io_cycle_data <= {8{ioctl_load_addr[6]}};
+            else if (inj_meminit)
+                io_cycle_data <= inj_meminit_data;
             else
                 io_cycle_data <= ioctl_data;
         end
@@ -1131,9 +1182,9 @@ always @(posedge clk_sys) begin
     // Handle file writes
     if (ioctl_wr) begin
         if (load_prg) begin
-            if      (ioctl_addr == 0) ioctl_load_addr[7:0]  <= ioctl_data;
-            else if (ioctl_addr == 1) ioctl_load_addr[15:8] <= ioctl_data;
-            else                      ioctl_req_wr <= 1;
+            if      (ioctl_addr == 0) begin ioctl_load_addr[7:0]  <= ioctl_data; inj_end[7:0]  <= ioctl_data; end
+            else if (ioctl_addr == 1) begin ioctl_load_addr[15:8] <= ioctl_data; inj_end[15:8] <= ioctl_data; end
+            else begin ioctl_req_wr <= 1; inj_end <= inj_end + 1'b1; end
         end
 
         if (load_crt) begin
@@ -1206,6 +1257,33 @@ always @(posedge clk_sys) begin
                 erasing <= 0;
                 erase_cram <= 0;
             end
+        end
+    end
+
+    // BASIC pointer initialization after PRG load
+    // Sets up BASIC pointers so RUN works
+    if (old_download & ~ioctl_download & load_prg & ~inj_meminit) begin
+        inj_meminit <= 1;
+        ioctl_load_addr <= 0;
+    end
+
+    if (inj_meminit && !ioctl_req_wr) begin
+        if (ioctl_load_addr == 'h100) begin
+            inj_meminit <= 0;
+            start_strk  <= 1; // trigger auto-RUN
+        end
+        else begin
+            case (ioctl_load_addr)
+                'h2B: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h01; end // TXT low
+                'h2C: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h08; end // TXT high
+                'hAC: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h00; end // SAVE low
+                'hAD: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h00; end // SAVE high
+                'h2D, 'h2F, 'h31, 'hAE:
+                      begin ioctl_req_wr <= 1; inj_meminit_data <= inj_end[7:0]; end
+                'h2E, 'h30, 'h32, 'hAF:
+                      begin ioctl_req_wr <= 1; inj_meminit_data <= inj_end[15:8]; end
+                default: ioctl_load_addr <= ioctl_load_addr + 1'b1;
+            endcase
         end
     end
 end
