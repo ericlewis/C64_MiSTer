@@ -3,11 +3,12 @@
     "magic": "APF_VER_1",
     "data_slots": [
       {
-        "id": 1,
+        "id": 0,
         "name": "Load Game",
-        "required": false,
-        "parameters": "0x20000000",
-        "extensions": ["prg", "crt"]
+        "required": true,
+        "parameters": "0x1",
+        "extensions": ["prg", "crt"],
+        "address": "0x10000000"
       }
     ]
   }

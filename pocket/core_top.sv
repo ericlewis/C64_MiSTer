@@ -487,9 +487,9 @@ reg        c64_reset_n = 0;
 reg [19:0] reset_counter = 20'd200000;
 
 always @(posedge clk_sys) begin
-    c64_reset_n <= (reset_counter == 0);
+    c64_reset_n <= (reset_counter == 0) & ~ioctl_download;
 
-    if (status[0])
+    if (status[0] | ioctl_download)
         reset_counter <= 20'd200000;
     else if (erasing)
         force_erase <= 0;  // stall counter while erase runs
@@ -556,7 +556,7 @@ wire [27:0] dl_addr;
 wire  [7:0] dl_data;
 
 data_loader #(
-    .ADDRESS_MASK_UPPER_4(4'h2),  // captures 0x2xxxxxxx
+    .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx (matches data.json address)
     .ADDRESS_SIZE(28),
     .WRITE_MEM_CLOCK_DELAY(4),
     .OUTPUT_WORD_SIZE(1)
@@ -572,40 +572,33 @@ data_loader #(
     .write_data(dl_data)
 );
 
-// Track download: only assert ioctl_download when data_loader
-// is actually writing data. This way no-file boot works cleanly.
+// Track download state (matches NES core pattern)
 reg        prg_load_done = 0;
-reg        dl_ever_wrote = 0;
-reg        dl_wr_prev = 0;
+reg        is_downloading = 0;
+
+always @(posedge clk_74a) begin
+    if (dataslot_requestwrite) is_downloading <= 1;
+    else if (dataslot_allcomplete) is_downloading <= 0;
+end
+
+// Sync to clk_sys
+reg dl_s0 = 0, dl_s1 = 0, dl_prev = 0;
 
 always @(posedge clk_sys) begin
-    dl_wr_prev <= dl_wr;
+    dl_s0 <= is_downloading;
+    dl_s1 <= dl_s0;
+    dl_prev <= dl_s1;
 
-    // Mark that we received at least one byte
-    if (dl_wr) dl_ever_wrote <= 1;
-
-    // ioctl_download: high from first write until allcomplete syncs low
-    ioctl_download <= dl_ever_wrote;
+    ioctl_download <= dl_s1;
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= dl_addr[24:0];
     ioctl_data     <= dl_data;
     ioctl_index    <= 8'h01; // PRG
 
-    // Detect end of download: dl_wr stops and allcomplete has fired
-    // Use a simple timeout: if no dl_wr for ~1M cycles, download is done
-    if (dl_wr) begin
-        dl_timeout_cnt <= 20'd1000000;
-    end else if (dl_ever_wrote && dl_timeout_cnt != 0) begin
-        dl_timeout_cnt <= dl_timeout_cnt - 1'd1;
-        if (dl_timeout_cnt == 1) begin
-            ioctl_download <= 0;
-            dl_ever_wrote  <= 0;
-            prg_load_done  <= ~prg_load_done;
-        end
-    end
+    // Detect falling edge = download complete
+    if (dl_prev & ~dl_s1)
+        prg_load_done <= ~prg_load_done;
 end
-
-reg [19:0] dl_timeout_cnt = 0;
 
 // ========================================================================
 //  C64 Core
