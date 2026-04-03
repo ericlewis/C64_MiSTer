@@ -19,23 +19,18 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: raetro/quartus:pocket
-      options: --user root
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Generate PLL IP
-        working-directory: pocket
-        run: |
-          quartus_sh -t generate_pll.tcl || echo "PLL generation via tcl failed, using inline altera_pll"
-
       - name: Compile with Quartus
-        working-directory: pocket
         run: |
-          quartus_sh --flow compile C64_Pocket
+          docker run --rm \
+            -v "${{ github.workspace }}:/build" \
+            -w /build/pocket \
+            raetro/quartus:pocket \
+            quartus_sh --flow compile C64_Pocket
 
       - name: Reverse bitstream
         run: |
