@@ -4,17 +4,10 @@
     "data_slots": [
       {
         "id": 1,
-        "name": "Load Program",
-        "required": false,
+        "name": "Load Game",
+        "required": true,
         "parameters": "0x10000000",
-        "extensions": ["prg"]
-      },
-      {
-        "id": 2,
-        "name": "Load Cartridge",
-        "required": false,
-        "parameters": "0x10000000",
-        "extensions": ["crt"]
+        "extensions": ["prg", "crt"]
       }
     ]
   }
