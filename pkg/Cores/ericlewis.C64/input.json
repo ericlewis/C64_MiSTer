@@ -1,0 +1,72 @@
+{
+  "input": {
+    "magic": "APF_VER_1",
+    "controllers": [
+      {
+        "type": "default",
+        "mappings": [
+          {
+            "id": 0,
+            "name": "Joystick Up",
+            "key": "pad_btn_dpad_up"
+          },
+          {
+            "id": 1,
+            "name": "Joystick Down",
+            "key": "pad_btn_dpad_down"
+          },
+          {
+            "id": 2,
+            "name": "Joystick Left",
+            "key": "pad_btn_dpad_left"
+          },
+          {
+            "id": 3,
+            "name": "Joystick Right",
+            "key": "pad_btn_dpad_right"
+          },
+          {
+            "id": 4,
+            "name": "Fire 1",
+            "key": "pad_btn_a"
+          },
+          {
+            "id": 5,
+            "name": "Fire 2",
+            "key": "pad_btn_b"
+          },
+          {
+            "id": 6,
+            "name": "Fire 3",
+            "key": "pad_btn_y"
+          },
+          {
+            "id": 7,
+            "name": "RUN/STOP",
+            "key": "pad_btn_x"
+          },
+          {
+            "id": 8,
+            "name": "SPACE",
+            "key": "pad_trig_l"
+          },
+          {
+            "id": 9,
+            "name": "RESTORE",
+            "key": "pad_trig_r"
+          },
+          {
+            "id": 10,
+            "name": "Start (RUN)",
+            "key": "pad_btn_start"
+          },
+          {
+            "id": 11,
+            "name": "Select",
+            "key": "pad_btn_select"
+          }
+        ]
+      }
+    ]
+  }
+}

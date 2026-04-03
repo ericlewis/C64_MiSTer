@@ -1,0 +1,65 @@
+name: Build Pocket Core
+
+on:
+  push:
+    branches: [master, pocket]
+    paths:
+      - 'pocket/**'
+      - 'rtl/**'
+      - 'roms/**'
+      - 'pkg/**'
+      - '.github/workflows/pocket.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'pocket/**'
+      - 'rtl/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: raetro/quartus:pocket
+      options: --user root
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate PLL IP
+        working-directory: pocket
+        run: |
+          quartus_sh -t generate_pll.tcl || echo "PLL generation via tcl failed, using inline altera_pll"
+
+      - name: Compile with Quartus
+        working-directory: pocket
+        run: |
+          quartus_sh --flow compile C64_Pocket
+
+      - name: Reverse bitstream
+        run: |
+          python3 pocket/reverse_bitstream.py \
+            pocket/output_files/C64_Pocket.rbf \
+            pocket/output_files/bitstream.rbf_r
+
+      - name: Package release artifact
+        run: |
+          mkdir -p release/Cores/ericlewis.C64
+          mkdir -p release/Platforms
+          mkdir -p release/Assets/c64/common
+
+          cp pocket/output_files/bitstream.rbf_r release/Cores/ericlewis.C64/
+          cp pkg/Cores/ericlewis.C64/*.json release/Cores/ericlewis.C64/
+          cp pkg/Platforms/c64.json release/Platforms/
+
+          if [ -d pkg/Assets/c64/common ] && [ "$(ls -A pkg/Assets/c64/common 2>/dev/null)" ]; then
+            cp pkg/Assets/c64/common/* release/Assets/c64/common/
+          fi
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ericlewis.C64-pocket
+          path: release/
+          retention-days: 30

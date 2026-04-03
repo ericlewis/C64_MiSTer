@@ -1,0 +1,152 @@
+{
+  "interact": {
+    "magic": "APF_VER_1",
+    "variables": [
+      {
+        "id": "0x00",
+        "name": "Video Standard",
+        "type": "list",
+        "address": "0x00000000",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "PAL" },
+          { "value": "0x01", "name": "NTSC" }
+        ]
+      },
+      {
+        "id": "0x01",
+        "name": "Swap Joysticks",
+        "type": "list",
+        "address": "0x00000004",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "No" },
+          { "value": "0x01", "name": "Yes" }
+        ]
+      },
+      {
+        "id": "0x03",
+        "name": "Left SID Model",
+        "type": "list",
+        "address": "0x0000000C",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "6581" },
+          { "value": "0x01", "name": "8580" }
+        ]
+      },
+      {
+        "id": "0x04",
+        "name": "Right SID Model",
+        "type": "list",
+        "address": "0x00000010",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "6581" },
+          { "value": "0x01", "name": "8580" }
+        ]
+      },
+      {
+        "id": "0x05",
+        "name": "System ROM",
+        "type": "list",
+        "address": "0x00000014",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "Loadable C64" },
+          { "value": "0x01", "name": "Standard C64" },
+          { "value": "0x02", "name": "C64GS" },
+          { "value": "0x03", "name": "Japanese" }
+        ]
+      },
+      {
+        "id": "0x06",
+        "name": "Right SID Port",
+        "type": "list",
+        "address": "0x00000018",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "Same" },
+          { "value": "0x01", "name": "DE00" },
+          { "value": "0x02", "name": "D420" },
+          { "value": "0x03", "name": "D500" },
+          { "value": "0x04", "name": "DF00" }
+        ]
+      },
+      {
+        "id": "0x08",
+        "name": "VIC-II Variant",
+        "type": "list",
+        "address": "0x00000020",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "656x" },
+          { "value": "0x01", "name": "856x" },
+          { "value": "0x02", "name": "Early 856x" }
+        ]
+      },
+      {
+        "id": "0x09",
+        "name": "8580 Digifix",
+        "type": "list",
+        "address": "0x00000024",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "On" },
+          { "value": "0x01", "name": "Off" }
+        ]
+      },
+      {
+        "id": "0x0A",
+        "name": "CIA Mode",
+        "type": "list",
+        "address": "0x00000028",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "6526" },
+          { "value": "0x01", "name": "8521" }
+        ]
+      },
+      {
+        "id": "0x0B",
+        "name": "Turbo Mode",
+        "type": "list",
+        "address": "0x0000002C",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "Off" },
+          { "value": "0x01", "name": "C128" },
+          { "value": "0x02", "name": "Smart" }
+        ]
+      },
+      {
+        "id": "0x0C",
+        "name": "Sound Expander",
+        "type": "list",
+        "address": "0x00000030",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "Disabled" },
+          { "value": "0x01", "name": "OPL2" }
+        ]
+      },
+      {
+        "id": "0x0D",
+        "name": "Palette",
+        "type": "list",
+        "address": "0x00000034",
+        "defaultval": "0x00",
+        "options": [
+          { "value": "0x00", "name": "Colodore" },
+          { "value": "0x01", "name": "Ultimate" },
+          { "value": "0x02", "name": "Pepto-PAL" },
+          { "value": "0x03", "name": "Vice" },
+          { "value": "0x04", "name": "Vice 6569R1" },
+          { "value": "0x05", "name": "Vice 6569R5" },
+          { "value": "0x06", "name": "Vice 8565R2" },
+          { "value": "0x07", "name": "Lemon64" }
+        ]
+      }
+    ]
+  }
+}
