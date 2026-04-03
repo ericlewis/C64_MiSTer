@@ -388,8 +388,25 @@ always @(posedge clk_vid) begin
     vid_vb <= vblank_int;
 end
 
-assign video_rgb = (~vid_hb & ~vid_vb) ? {vid_r, vid_g, vid_b} : 24'd0;
-assign video_de  = ~vid_hb & ~vid_vb;
+// Debug: show colored border based on download state
+// Green = got dataslot_requestread, Red = got bridge writes, Blue = playback done
+reg [2:0] dbg_dl_flags = 0; // {playback_done, got_writes, got_request}
+always @(posedge clk_74a) begin
+    if (dataslot_requestread) dbg_dl_flags[0] <= 1;
+    if (bridge_wr && dl_active_74 && bridge_addr[31:28] != 4'hF && bridge_addr[31:28] != 4'h0)
+        dbg_dl_flags[1] <= 1;
+end
+always @(posedge clk_sys) begin
+    if (dl_phase == 2'd3) dbg_dl_flags[2] <= 1;
+end
+
+wire [23:0] dbg_color = {dbg_dl_flags[1] ? 8'hFF : 8'h00,   // R = got bridge writes
+                         dbg_dl_flags[0] ? 8'hFF : 8'h00,   // G = got request
+                         dbg_dl_flags[2] ? 8'hFF : 8'h00};  // B = playback done
+
+// Show debug color in border area (outside DE), normal video in active area
+assign video_rgb = (~vid_hb & ~vid_vb) ? {vid_r, vid_g, vid_b} : dbg_color;
+assign video_de  = 1'b1; // Always active so border is visible
 assign video_vs  = vid_vs;
 assign video_hs  = vid_hs;
 
@@ -555,50 +572,37 @@ reg        dl_active_74 = 0;
 reg [24:0] dl_addr_74 = 0;
 reg  [7:0] dl_index_74 = 0;
 
-always @(posedge clk_74a) begin
-    target_dataslot_read     <= 0;
-    target_dataslot_write    <= 0;
-    target_dataslot_getfile  <= 0;
-    target_dataslot_openfile <= 0;
-
-    if (dataslot_requestread) begin
-        dl_active_74 <= 1;
-        dl_addr_74   <= 0;
-        dl_index_74  <= 8'h01; // PRG
-    end
-
-    if (dataslot_allcomplete)
-        dl_active_74 <= 0;
-end
-
-//
-// File data arrives via bridge_wr. We write it into a dual-clock
-// BRAM buffer (clk_74a write side, clk_sys read side).
-// After download completes, the ioctl state machine reads it out.
-//
-
-// Write side (clk_74a): capture bridge writes into BRAM
+// Write side (clk_74a): track state + capture bridge writes into BRAM
 reg [15:0] dl_bram_wraddr = 0;
 reg  [7:0] dl_bram_wrdata;
 reg        dl_bram_wren = 0;
 
 always @(posedge clk_74a) begin
+    target_dataslot_read     <= 0;
+    target_dataslot_write    <= 0;
+    target_dataslot_getfile  <= 0;
+    target_dataslot_openfile <= 0;
     dl_bram_wren <= 0;
 
+    if (dataslot_requestread) begin
+        dl_active_74 <= 1;
+        dl_addr_74   <= 0;
+        dl_bram_wraddr <= 0;
+        dl_index_74  <= 8'h01; // PRG
+    end
+
+    if (dataslot_allcomplete)
+        dl_active_74 <= 0;
+
+    // Capture bridge writes into BRAM
     if (bridge_wr && dl_active_74 &&
         bridge_addr[31:28] != 4'hF &&
         bridge_addr[31:28] != 4'h0) begin
-        // Write 4 bytes from the 32-bit word sequentially
-        // For now, just write the low byte (simplified — most PRG files
-        // are loaded one byte at a time by the Pocket OS)
         dl_bram_wrdata <= bridge_wr_data[7:0];
         dl_bram_wren   <= 1;
         dl_bram_wraddr <= dl_addr_74[15:0];
         dl_addr_74     <= dl_addr_74 + 1'd1;
     end
-
-    if (dataslot_requestread)
-        dl_bram_wraddr <= 0;
 end
 
 // Dual-clock BRAM (64KB max file size)
