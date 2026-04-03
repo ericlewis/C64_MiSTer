@@ -629,6 +629,17 @@ wire [17:0] audio_l, audio_r;
 wire  [7:0] r, g, b;
 wire        hsync, vsync;
 
+// Dock keyboard → PS/2 conversion
+wire [10:0] dock_ps2_key;
+
+usb_to_ps2 usb_kbd (
+    .clk       (clk_sys),
+    .cont3_key (cont3_key),
+    .cont3_joy (cont3_joy),
+    .cont3_trig(cont3_trig),
+    .ps2_key   (dock_ps2_key)
+);
+
 // Auto-RUN key injection after PRG load
 // Injects: R, U, N, RETURN
 reg        start_strk = 0;
@@ -663,7 +674,8 @@ always @(posedge clk_sys) begin
     end
     else begin
         to <= 0;
-        key <= 0;
+        // When not injecting auto-RUN, pass through dock keyboard
+        key <= dock_ps2_key;
     end
 
     if (start_strk) begin

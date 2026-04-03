@@ -756,6 +756,10 @@ set_global_assignment -name QIP_FILE mf_pllbase.qip
 # MiSTer Pocket Bridge library
 set_global_assignment -name SYSTEMVERILOG_FILE mister_pocket_bridge/bridge_interact.sv
 
+# Dock keyboard/mouse
+set_global_assignment -name SYSTEMVERILOG_FILE usb_to_ps2.sv
+set_global_assignment -name SYSTEMVERILOG_FILE usb_to_ps2_mouse.sv
+
 # agg23 Pocket utilities
 set_global_assignment -name SYSTEMVERILOG_FILE data_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE sound_i2s.sv
