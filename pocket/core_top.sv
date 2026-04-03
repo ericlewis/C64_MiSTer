@@ -532,16 +532,8 @@ wire load_prg = ioctl_index == 8'h01;
 wire load_crt = ioctl_index == 8'h41;
 wire load_rom = ioctl_index == 8'd8;
 
-// Data loading disabled — no data slots configured.
-// Core boots to BASIC from built-in MIF ROMs.
-
-// Stub: no target commands
-always @(posedge clk_74a) begin
-    target_dataslot_read     <= 0;
-    target_dataslot_write    <= 0;
-    target_dataslot_getfile  <= 0;
-    target_dataslot_openfile <= 0;
-end
+// Data loading via deferred slot + target_dataslot_read DMA
+// (target commands are driven by DMA state machine below)
 
 // ---- PRG loading via deferred data slot + target_dataslot_read ----
 //
