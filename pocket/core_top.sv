@@ -574,25 +574,29 @@ always @(posedge clk_74a) begin
     dl_buf_wr <= 0;
 
     if (bridge_wr && bridge_addr[31:28] == 4'h7 && dl_dma_active) begin
-        // Bridge is big-endian: byte 0 = [31:24], byte 1 = [23:16], etc.
-        dl_buf_wrdata  <= bridge_wr_data[31:24];
-        dl_buf_wr      <= 1;
+        // Use bridge address to determine byte offset within the chunk,
+        // not a running counter. This handles any write order.
+        // bridge_addr[9:0] is the byte offset within the 1KB chunk.
+        // Each write is a 32-bit word at a 4-byte aligned address.
+        // Unpack all 4 bytes using the address for positioning.
         dl_unpack_word <= bridge_wr_data;
-        dl_unpack_base <= dl_buf_wrptr;
+        dl_unpack_base <= bridge_addr[11:0]; // byte address within chunk
+        dl_unpack      <= 2'd0;
+        // Write first byte immediately
+        dl_buf_wrdata  <= bridge_wr_data[7:0];  // try little-endian first
+        dl_buf_wrptr   <= bridge_addr[11:0];
+        dl_buf_wr      <= 1;
         dl_unpack      <= 2'd1;
-        dl_buf_wrptr   <= dl_buf_wrptr + 1'd1;
     end
     else if (dl_unpack != 0) begin
         dl_buf_wr <= 1;
         dl_buf_wrptr <= dl_unpack_base + {10'd0, dl_unpack};
         case (dl_unpack)
-            2'd1: dl_buf_wrdata <= dl_unpack_word[23:16];
-            2'd2: dl_buf_wrdata <= dl_unpack_word[15:8];
-            2'd3: dl_buf_wrdata <= dl_unpack_word[7:0];
+            2'd1: dl_buf_wrdata <= dl_unpack_word[15:8];
+            2'd2: dl_buf_wrdata <= dl_unpack_word[23:16];
+            2'd3: dl_buf_wrdata <= dl_unpack_word[31:24];
         endcase
         dl_unpack <= (dl_unpack == 2'd3) ? 2'd0 : dl_unpack + 1'd1;
-        if (dl_unpack == 2'd3)
-            dl_buf_wrptr <= dl_unpack_base + 12'd4;
     end
 
     // Reset write pointer when starting new chunk
