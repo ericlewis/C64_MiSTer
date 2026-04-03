@@ -777,14 +777,18 @@ wire       drive_iec_clk_o, drive_iec_data_o;
 wire [1:0] drive_led;
 wire       disk_ready;
 
-wire [31:0] sd_lba      [1];
-wire  [5:0] sd_blk_cnt  [1];
-wire        sd_rd_w, sd_wr_w;
-wire        sd_ack_w;
-wire [13:0] sd_buff_addr_w;
-wire  [7:0] sd_buff_dout_w;
-wire  [7:0] sd_buff_din  [1];
-wire        sd_buff_wr_w;
+// sd_lba interface — iec_drive outputs requests, disk_loader responds
+// iec_drive outputs:
+wire [31:0] sd_lba_arr     [1];   // from iec_drive
+wire  [5:0] sd_blk_cnt_arr [1];   // from iec_drive
+wire        sd_rd_0, sd_wr_0;     // from iec_drive
+wire  [7:0] sd_buff_din_arr[1];   // from iec_drive (write data)
+
+// disk_loader outputs (responses back to iec_drive):
+wire        sd_ack_0;             // from disk_loader
+wire [13:0] sd_buff_addr_0;       // from disk_loader
+wire  [7:0] sd_buff_dout_0;       // from disk_loader (read data)
+wire        sd_buff_wr_0;         // from disk_loader
 
 reg drive_mounted = 0;
 
@@ -811,15 +815,15 @@ iec_drive #(.PARPORT(1), .DUALROM(1), .DRIVES(1)) iec_drive_inst (
     .par_data_o   (),
     .par_stb_o    (),
     .clk_sys      (clk_sys),
-    .sd_lba       (sd_lba),
-    .sd_blk_cnt   (sd_blk_cnt),
-    .sd_rd        (sd_rd_w),
-    .sd_wr        (sd_wr_w),
-    .sd_ack       (sd_ack_w),
-    .sd_buff_addr (sd_buff_addr_w),
-    .sd_buff_dout (sd_buff_dout_w),
-    .sd_buff_din  (sd_buff_din),
-    .sd_buff_wr   (sd_buff_wr_w),
+    .sd_lba       (sd_lba_arr),
+    .sd_blk_cnt   (sd_blk_cnt_arr),
+    .sd_rd        (sd_rd_0),
+    .sd_wr        (sd_wr_0),
+    .sd_ack       (sd_ack_0),
+    .sd_buff_addr (sd_buff_addr_0),
+    .sd_buff_dout (sd_buff_dout_0),
+    .sd_buff_din  (sd_buff_din_arr),
+    .sd_buff_wr   (sd_buff_wr_0),
     .rom_addr     (load_rom ? (ioctl_addr[15:0] - 16'h4000) : ioctl_addr[14:0]),
     .rom_data     (ioctl_data),
     .rom_wr       (load_rom && ioctl_addr[16:14] != 0 && ioctl_download && ioctl_wr),
@@ -829,9 +833,9 @@ iec_drive #(.PARPORT(1), .DUALROM(1), .DRIVES(1)) iec_drive_inst (
 // Drive clock enable: 16 MHz from clk_sys
 reg drive_ce;
 always @(posedge clk_sys) begin
-    int sum = 0;
-    int msum;
-    msum <= ntsc ? 32727264 : 31527954;
+    integer sum;
+    integer msum;
+    msum = ntsc ? 32727264 : 31527954;
     drive_ce <= 0;
     sum = sum + 16000000;
     if (sum >= msum) begin
@@ -848,15 +852,15 @@ reg [31:0] img_size = 0;
 disk_loader #(.DISK_BASE_ADDR(25'h0400000)) disk_loader_inst (
     .clk_sys      (clk_sys),
     .reset        (~c64_reset_n),
-    .sd_lba       (sd_lba),
-    .sd_blk_cnt   (sd_blk_cnt),
-    .sd_rd        (sd_rd_w),
-    .sd_wr        (sd_wr_w),
-    .sd_ack       (sd_ack_w),
-    .sd_buff_addr (sd_buff_addr_w),
-    .sd_buff_dout (sd_buff_dout_w),
-    .sd_buff_din  (sd_buff_din),
-    .sd_buff_wr   (sd_buff_wr_w),
+    .sd_lba       (sd_lba_arr),
+    .sd_blk_cnt   (sd_blk_cnt_arr),
+    .sd_rd        (sd_rd_0),
+    .sd_wr        (sd_wr_0),
+    .sd_ack       (sd_ack_0),
+    .sd_buff_addr (sd_buff_addr_0),
+    .sd_buff_dout (sd_buff_dout_0),
+    .sd_buff_din  (sd_buff_din_arr),
+    .sd_buff_wr   (sd_buff_wr_0),
     .img_mounted  (img_mounted),
     .img_size     (img_size),
     .img_readonly (),
