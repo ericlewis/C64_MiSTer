@@ -1,6 +1,15 @@
 {
   "data": {
     "magic": "APF_VER_1",
-    "data_slots": []
+    "data_slots": [
+      {
+        "id": 1,
+        "name": "Load Game",
+        "required": true,
+        "deferload": true,
+        "parameters": "0x10000000",
+        "extensions": ["prg", "crt"]
+      }
+    ]
   }
 }

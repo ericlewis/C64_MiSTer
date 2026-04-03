@@ -533,20 +533,220 @@ wire load_prg = ioctl_index == 8'h01;
 wire load_crt = ioctl_index == 8'h41;
 wire load_rom = ioctl_index == 8'd8;
 
-// No data loading — stub all signals
+// ============================================================
+//  PRG Loading via deferred data slot + target_dataslot_read
+//
+//  Flow:
+//  1. User picks PRG at launch (required: true, deferload: true)
+//  2. C64 boots to BASIC normally (DMA waits 1.5 seconds)
+//  3. DMA requests file chunks into bridge addr 0x70000000
+//  4. Bridge writes captured into line buffer
+//  5. After DMA, playback feeds bytes through ioctl → C64 RAM
+//
+//  Safety: ioctl_download only goes high AFTER DMA completes,
+//  well after boot. The erasing stall in the reset block
+//  guarantees the C64 is fully booted before any loading.
+// ============================================================
+
+// -- Line buffer for received data (4KB, enough per chunk) --
+reg  [7:0] dl_buf [0:4095];
+reg [11:0] dl_buf_wrptr = 0;
+reg [11:0] dl_buf_rdptr;
+reg  [7:0] dl_buf_rddata;
+
+always @(posedge clk_74a)
+    if (dl_buf_wr) dl_buf[dl_buf_wrptr] <= dl_buf_wrdata;
+
+always @(posedge clk_sys)
+    dl_buf_rddata <= dl_buf[dl_buf_rdptr];
+
+// -- Bridge write capture (clk_74a): only during active DMA --
+reg        dl_buf_wr = 0;
+reg  [7:0] dl_buf_wrdata;
+reg        dl_dma_active = 0;
+
+// Unpack 32-bit bridge writes to bytes
+reg  [1:0] dl_unpack = 0;
+reg [31:0] dl_unpack_word;
+reg [11:0] dl_unpack_base;
+
+always @(posedge clk_74a) begin
+    dl_buf_wr <= 0;
+
+    if (bridge_wr && bridge_addr[31:28] == 4'h7 && dl_dma_active) begin
+        // First byte
+        dl_buf_wrdata  <= bridge_wr_data[7:0];
+        dl_buf_wr      <= 1;
+        dl_buf_wrptr   <= dl_buf_wrptr;
+        // Save for unpacking remaining 3 bytes
+        dl_unpack_word <= bridge_wr_data;
+        dl_unpack_base <= dl_buf_wrptr;
+        dl_unpack      <= 2'd1;
+        dl_buf_wrptr   <= dl_buf_wrptr + 1'd1;
+    end
+    else if (dl_unpack != 0) begin
+        dl_buf_wr <= 1;
+        dl_buf_wrptr <= dl_unpack_base + {10'd0, dl_unpack};
+        case (dl_unpack)
+            2'd1: dl_buf_wrdata <= dl_unpack_word[15:8];
+            2'd2: dl_buf_wrdata <= dl_unpack_word[23:16];
+            2'd3: dl_buf_wrdata <= dl_unpack_word[31:24];
+        endcase
+        dl_unpack <= (dl_unpack == 2'd3) ? 2'd0 : dl_unpack + 1'd1;
+        if (dl_unpack == 2'd3)
+            dl_buf_wrptr <= dl_unpack_base + 12'd4;
+    end
+
+    // Reset write pointer when starting new chunk
+    if (dl_chunk_start) dl_buf_wrptr <= 0;
+end
+
+// -- DMA state machine (clk_74a) --
+// Single always block drives ALL target_dataslot signals
+localparam DS_IDLE    = 3'd0;
+localparam DS_DELAY   = 3'd1;
+localparam DS_CHUNK   = 3'd2;
+localparam DS_WAIT    = 3'd3;
+localparam DS_EMIT    = 3'd4;
+localparam DS_DONE    = 3'd5;
+
+localparam CHUNK_SIZE = 32'd1024;
+
+reg  [2:0] ds_state = DS_IDLE;
+reg [26:0] ds_delay = 0;
+reg [31:0] ds_offset = 0;
+reg [31:0] ds_chunk_bytes = 0;
+reg        ds_slot_seen = 0;    // a dataslot_requestread was received
+reg        dl_chunk_start = 0;
+reg        ds_emit_req = 0;     // toggle to signal clk_sys to play back
+reg        ds_done = 0;
+
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
     target_dataslot_write    <= 0;
     target_dataslot_getfile  <= 0;
     target_dataslot_openfile <= 0;
+    dl_chunk_start <= 0;
+
+    if (dataslot_requestread) ds_slot_seen <= 1;
+
+    case (ds_state)
+    DS_IDLE: begin
+        if (dataslot_allcomplete && ds_slot_seen) begin
+            ds_slot_seen <= 0;
+            ds_delay     <= 27'd111375000; // 1.5 sec at 74.25 MHz
+            ds_state     <= DS_DELAY;
+        end
+    end
+
+    DS_DELAY: begin
+        ds_delay <= ds_delay - 1'd1;
+        if (ds_delay == 0) begin
+            ds_offset <= 0;
+            ds_state  <= DS_CHUNK;
+        end
+    end
+
+    DS_CHUNK: begin
+        // Request next 1KB chunk
+        dl_chunk_start <= 1;
+        dl_dma_active  <= 1;
+        target_dataslot_id         <= 16'd1;
+        target_dataslot_slotoffset <= ds_offset;
+        target_dataslot_bridgeaddr <= 32'h70000000;
+        target_dataslot_length     <= CHUNK_SIZE;
+        target_dataslot_read       <= 1;
+        ds_state <= DS_WAIT;
+    end
+
+    DS_WAIT: begin
+        if (target_dataslot_done) begin
+            dl_dma_active <= 0;
+            ds_chunk_bytes <= dl_buf_wrptr; // how many bytes we got
+            if (target_dataslot_err != 0 || dl_buf_wrptr == 0) begin
+                // Error or no data → done
+                ds_state <= DS_DONE;
+            end else begin
+                // Signal playback, then request next chunk
+                ds_emit_req <= ~ds_emit_req;
+                ds_state    <= DS_EMIT;
+            end
+        end
+    end
+
+    DS_EMIT: begin
+        // Wait for playback to finish (ds_emit_ack matches ds_emit_req)
+        if (ds_emit_ack == ds_emit_req) begin
+            ds_offset <= ds_offset + CHUNK_SIZE;
+            ds_state  <= DS_CHUNK;
+        end
+    end
+
+    DS_DONE: begin
+        // One final emit for any remaining bytes
+        if (ds_chunk_bytes > 0) begin
+            ds_emit_req <= ~ds_emit_req;
+            ds_chunk_bytes <= 0;
+        end
+        // Stay done — don't retrigger
+    end
+    endcase
 end
+
+// -- Playback (clk_sys): emit ioctl bytes from buffer --
+reg        ds_emit_ack = 0;
+reg [1:0]  emit_state = 0;
+reg [11:0] emit_addr;
+reg [11:0] emit_len;
+reg [24:0] emit_ioctl_addr = 0;  // running address across all chunks
+
+// Synchronize emit request toggle
+reg [2:0] emit_req_sync;
+wire emit_req_pending = (emit_req_sync[2] != ds_emit_ack);
 
 always @(posedge clk_sys) begin
-    ioctl_wr       <= 0;
-    ioctl_download <= 0;
-end
+    emit_req_sync <= {emit_req_sync[1:0], ds_emit_req};
+    ioctl_wr <= 0;
 
-// TODO: PRG loading will be added once the DMA mechanism is proven
+    case (emit_state)
+    2'd0: begin
+        ioctl_download <= 0;
+        if (emit_req_pending) begin
+            emit_addr <= 0;
+            emit_len  <= ds_chunk_bytes[11:0];
+            dl_buf_rdptr <= 0;
+            emit_state <= 2'd1;
+        end
+    end
+
+    2'd1: begin
+        // BRAM read latency cycle
+        ioctl_download <= 1;
+        ioctl_index    <= 8'h01; // PRG
+        emit_state <= 2'd2;
+    end
+
+    2'd2: begin
+        ioctl_download <= 1;
+        if (emit_addr < emit_len) begin
+            ioctl_wr         <= 1;
+            ioctl_data       <= dl_buf_rddata;
+            ioctl_addr       <= emit_ioctl_addr;
+            emit_ioctl_addr  <= emit_ioctl_addr + 1'd1;
+            emit_addr        <= emit_addr + 1'd1;
+            dl_buf_rdptr     <= emit_addr + 1'd1;
+        end else begin
+            emit_state <= 2'd3;
+        end
+    end
+
+    2'd3: begin
+        ioctl_download <= 0;
+        ds_emit_ack    <= ds_emit_req; // signal DMA we're done
+        emit_state     <= 2'd0;
+    end
+    endcase
+end
 
 // ========================================================================
 //  C64 Core
