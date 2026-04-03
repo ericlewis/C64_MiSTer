@@ -395,54 +395,21 @@ assign video_vs  = vid_vs;
 assign video_hs  = vid_hs;
 
 // ========================================================================
-//  Audio Output (I2S from core-template pattern)
+//  Audio Output — agg23 sound_i2s with proper CDC
 // ========================================================================
 
-assign audio_mclk = audgen_mclk;
-assign audio_dac  = audgen_dac;
-assign audio_lrck = audgen_lrck;
-
-reg  [21:0] audgen_accum;
-reg         audgen_mclk;
-parameter [20:0] CYCLE_48KHZ = 21'd122880 * 2;
-
-always @(posedge clk_74a) begin
-    audgen_accum <= audgen_accum + CYCLE_48KHZ;
-    if (audgen_accum >= 21'd742500) begin
-        audgen_mclk  <= ~audgen_mclk;
-        audgen_accum <= audgen_accum - 21'd742500 + CYCLE_48KHZ;
-    end
-end
-
-reg  [1:0]  aud_mclk_divider;
-wire        audgen_sclk = aud_mclk_divider[1];
-always @(posedge audgen_mclk) begin
-    aud_mclk_divider <= aud_mclk_divider + 1'b1;
-end
-
-reg  [4:0]  audgen_lrck_cnt;
-reg         audgen_lrck;
-reg         audgen_dac;
-reg  [15:0] audgen_shift;
-
-// Latch audio in clk_74a domain (same as MCLK source) to avoid CDC issues
-reg  [15:0] aud_l_s1, aud_l_s2, aud_r_s1, aud_r_s2;
-always @(posedge clk_74a) begin
-    aud_l_s1 <= alo;
-    aud_l_s2 <= aud_l_s1;
-    aud_r_s1 <= aro;
-    aud_r_s2 <= aud_r_s1;
-end
-
-always @(negedge audgen_sclk) begin
-    audgen_lrck_cnt <= audgen_lrck_cnt + 1'b1;
-    if (audgen_lrck_cnt == 5'd31)
-        audgen_lrck <= ~audgen_lrck;
-    if (audgen_lrck_cnt == 5'd0)
-        audgen_shift <= audgen_lrck ? aud_r_s2 : aud_l_s2;
-    audgen_dac   <= audgen_shift[15];
-    audgen_shift <= {audgen_shift[14:0], 1'b0};
-end
+sound_i2s #(
+    .CHANNEL_WIDTH(16),
+    .SIGNED_INPUT(1)
+) sound_i2s_inst (
+    .clk_74a   (clk_74a),
+    .clk_audio (clk_sys),
+    .audio_l   (alo),
+    .audio_r   (aro),
+    .audio_mclk(audio_mclk),
+    .audio_lrck(audio_lrck),
+    .audio_dac (audio_dac)
+);
 
 // ========================================================================
 //  SDRAM
