@@ -805,7 +805,6 @@ always @(posedge clk_sys) begin
     if (start_strk) begin
         act <= 1;
         key <= 0;
-        start_strk <= 0;
     end
 end
 
@@ -1160,6 +1159,7 @@ always @(posedge clk_sys) begin
     old_download <= ioctl_download;
     io_cycleD    <= io_cycle;
     cart_hdr_wr  <= 0;
+    start_strk   <= 0; // auto-clear each cycle, pulse only
 
     // On falling edge of io_cycle: perform one SDRAM write if pending
     if (~io_cycle & io_cycleD) begin
