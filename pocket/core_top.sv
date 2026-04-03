@@ -481,8 +481,8 @@ sdram sdram_inst (
 
 wire ntsc = status[2];
 
-// Simple reset: boot counter + manual reset via status[0]
-// Completely independent of download state — C64 always boots.
+// Reset: counter pauses during RAM erase so C64 doesn't boot
+// until erase is complete.
 reg        c64_reset_n = 0;
 reg [19:0] reset_counter = 20'd200000;
 
@@ -491,9 +491,10 @@ always @(posedge clk_sys) begin
 
     if (status[0])
         reset_counter <= 20'd200000;
+    else if (erasing)
+        force_erase <= 0;  // stall counter while erase runs
     else if (reset_counter != 0) begin
         reset_counter <= reset_counter - 1'd1;
-        // Trigger RAM erase near end of reset
         if (reset_counter == 20'd100) force_erase <= 1;
     end
     else
