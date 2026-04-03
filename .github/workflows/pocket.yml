@@ -24,6 +24,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Prepare build directory
+        run: |
+          # MIF paths in fpga64_buslogic.vhd are hardcoded as "rtl/roms/..."
+          # relative to the project root. Create symlink so they resolve from pocket/
+          ln -sf ../rtl pocket/rtl
+          ln -sf ../roms pocket/roms
+
       - name: Compile with Quartus
         run: |
           docker run --rm \
