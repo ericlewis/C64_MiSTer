@@ -24,6 +24,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Build system ROM from MIF files
+        run: python3 pocket/build_rom.py
+
       - name: Prepare build directory
         run: |
           # MIF paths in fpga64_buslogic.vhd are hardcoded as "rtl/roms/..."

@@ -465,38 +465,42 @@ sdram sdram_inst (
 // ========================================================================
 
 wire ntsc = status[2];
-reg c64_reset_n;
-reg reset_wait = 0;
+
+// Reset logic — the key issue is that clk_sys only runs when PLL is locked,
+// so we can't use !pll_core_locked as a reset trigger on clk_sys.
+// Instead, use an explicit boot counter that starts high.
+reg        c64_reset_n = 0;
+reg        reset_wait = 0;
+reg [19:0] reset_counter = 20'd200000;  // Start in reset
+reg        old_download_r = 0;
+reg        do_erase = 1;
+
 always @(posedge clk_sys) begin
-    integer reset_counter;
-    reg old_download;
-    reg do_erase = 1;
+    c64_reset_n  <= (reset_counter == 0);
+    old_download_r <= ioctl_download;
 
-    c64_reset_n <= !reset_counter;
-    old_download <= ioctl_download;
-
-    if (status[0] | status[17] | !pll_core_locked) begin
-        if (!pll_core_locked) do_erase <= 1;
-        reset_counter <= 100000;
+    if (status[0]) begin
+        do_erase <= 1;
+        reset_counter <= 20'd200000;
     end
-    else if (~old_download & ioctl_download & load_prg) begin
+    else if (~old_download_r & ioctl_download & load_prg) begin
         do_erase <= 1;
         reset_wait <= 1;
-        reset_counter <= 255;
+        reset_counter <= 20'd255;
     end
     else if (ioctl_download & load_rom) begin
         do_erase <= 1;
-        reset_counter <= 255;
+        reset_counter <= 20'd255;
     end
     else if (ioctl_download & ~reset_wait) ;
     else if (erasing) force_erase <= 0;
-    else if (!reset_counter) begin
+    else if (reset_counter == 0) begin
         do_erase <= 0;
         if (reset_wait && c64_addr == 'hFFCF) reset_wait <= 0;
     end
     else begin
-        reset_counter <= reset_counter - 1;
-        if (reset_counter == 100 && (~status[24] | do_erase)) force_erase <= 1;
+        reset_counter <= reset_counter - 1'd1;
+        if (reset_counter == 20'd100 && do_erase) force_erase <= 1;
     end
 end
 
@@ -929,8 +933,8 @@ reg [24:0] io_cycle_addr;
 reg  [7:0] io_cycle_data;
 reg [24:0] ioctl_load_addr;
 reg        ioctl_req_wr;
-reg        force_erase;
-reg        erasing;
+reg        force_erase = 0;
+reg        erasing = 0;
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
