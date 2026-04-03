@@ -349,7 +349,8 @@ bridge_interact #(.NUM_REGS(16)) interact_bridge (
 wire clk_sys;       // ~32 MHz
 wire clk64;         // ~63 MHz
 wire clk48;         // ~47 MHz
-wire clk_sys_90;    // ~32 MHz 90°
+wire clk_vid;       // ~8 MHz (pixel clock)
+wire clk_vid_90;    // ~8 MHz 90° (pixel clock for DDR)
 
 pocket_pll pll (
     .refclk          (clk_74a),
@@ -357,30 +358,40 @@ pocket_pll pll (
     .outclk_0        (clk64),
     .outclk_1        (clk_sys),
     .outclk_2        (clk48),
-    .outclk_3        (clk_sys_90),
+    .outclk_3        (clk_vid),
+    .outclk_4        (clk_vid_90),
     .locked          (pll_core_locked),
     .reconfig_to_pll (64'd0),
     .reconfig_from_pll()
 );
 
 // ========================================================================
-//  Video Output
+//  Video Output — use dedicated ~8MHz pixel clock (no skip)
 // ========================================================================
 
-assign video_rgb_clock    = clk_sys;
-assign video_rgb_clock_90 = clk_sys_90;
-assign video_rgb = (~hblank & ~vblank_int) ? {r, g, b} : 24'd0;
-assign video_de  = ~hblank & ~vblank_int;
-assign video_skip = ~ce_pix;
-assign video_vs  = vsync_out;
-assign video_hs  = hsync_out;
+assign video_rgb_clock    = clk_vid;
+assign video_rgb_clock_90 = clk_vid_90;
+assign video_skip = 1'b0;
 
-reg ce_pix;
-reg [1:0] pix_div;
-always @(posedge clk_sys) begin
-    pix_div <= pix_div + 1'd1;
-    ce_pix  <= (pix_div == 2'd0);
+// Register video signals from clk_sys to clk_vid domain.
+// clk_vid = clk_sys/4, so we sample at the pixel rate.
+reg [7:0]  vid_r, vid_g, vid_b;
+reg        vid_hs, vid_vs, vid_hb, vid_vb;
+
+always @(posedge clk_vid) begin
+    vid_r  <= r;
+    vid_g  <= g;
+    vid_b  <= b;
+    vid_hs <= hsync_out;
+    vid_vs <= vsync_out;
+    vid_hb <= hblank;
+    vid_vb <= vblank_int;
 end
+
+assign video_rgb = (~vid_hb & ~vid_vb) ? {vid_r, vid_g, vid_b} : 24'd0;
+assign video_de  = ~vid_hb & ~vid_vb;
+assign video_vs  = vid_vs;
+assign video_hs  = vid_hs;
 
 // ========================================================================
 //  Audio Output (I2S from core-template pattern)
@@ -412,11 +423,14 @@ reg  [4:0]  audgen_lrck_cnt;
 reg         audgen_lrck;
 reg         audgen_dac;
 reg  [15:0] audgen_shift;
-reg  [15:0] aud_l_latch, aud_r_latch;
 
-always @(posedge clk_sys) begin
-    aud_l_latch <= alo;
-    aud_r_latch <= aro;
+// Latch audio in clk_74a domain (same as MCLK source) to avoid CDC issues
+reg  [15:0] aud_l_s1, aud_l_s2, aud_r_s1, aud_r_s2;
+always @(posedge clk_74a) begin
+    aud_l_s1 <= alo;
+    aud_l_s2 <= aud_l_s1;
+    aud_r_s1 <= aro;
+    aud_r_s2 <= aud_r_s1;
 end
 
 always @(negedge audgen_sclk) begin
@@ -424,7 +438,7 @@ always @(negedge audgen_sclk) begin
     if (audgen_lrck_cnt == 5'd31)
         audgen_lrck <= ~audgen_lrck;
     if (audgen_lrck_cnt == 5'd0)
-        audgen_shift <= audgen_lrck ? aud_r_latch : aud_l_latch;
+        audgen_shift <= audgen_lrck ? aud_r_s2 : aud_l_s2;
     audgen_dac   <= audgen_shift[15];
     audgen_shift <= {audgen_shift[14:0], 1'b0};
 end
