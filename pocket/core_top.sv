@@ -619,9 +619,12 @@ reg [31:0] ds_offset = 0;
 reg [31:0] ds_chunk_bytes = 0;
 reg        ds_slot_seen = 0;    // a dataslot_requestread was received
 reg        dl_chunk_start = 0;
-reg        ds_emit_req = 0;     // toggle to signal clk_sys to play back
+reg        ds_emit_req = 0;
 reg        ds_done = 0;
 reg [26:0] ds_timeout;
+reg [31:0] ds_file_size = 0;
+reg [31:0] ds_remaining = 0;
+reg [31:0] ds_cur_chunk = 0;
 
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
@@ -630,12 +633,13 @@ always @(posedge clk_74a) begin
     target_dataslot_openfile <= 0;
     dl_chunk_start <= 0;
 
+    // Capture file size from dataslot_requestwrite (sent before allcomplete)
+    if (dataslot_requestwrite && dataslot_requestwrite_id == 16'd1)
+        ds_file_size <= dataslot_requestwrite_size;
+
     case (ds_state)
     DS_IDLE: begin
-        // Trigger on dataslot_allcomplete directly.
-        // With deferload, the Pocket writes slot info to BRAM then
-        // sends allcomplete — no requestread or update signals.
-        if (dataslot_allcomplete) begin
+        if (dataslot_allcomplete && ds_file_size > 0) begin
             ds_delay <= 27'd111375000; // 1.5 sec at 74.25 MHz
             ds_state <= DS_DELAY;
         end
@@ -644,23 +648,28 @@ always @(posedge clk_74a) begin
     DS_DELAY: begin
         ds_delay <= ds_delay - 1'd1;
         if (ds_delay == 0) begin
-            ds_offset <= 0;
-            ds_state  <= DS_CHUNK;
+            ds_offset    <= 0;
+            ds_remaining <= ds_file_size;
+            ds_state     <= DS_CHUNK;
         end
     end
 
     DS_CHUNK: begin
-        // Request next 1KB chunk — hold target_dataslot_read high
-        // until we see target_dataslot_ack
-        dl_chunk_start <= 1;
-        dl_dma_active  <= 1;
-        ds_timeout     <= 27'd74250000; // 1 second timeout
-        target_dataslot_id         <= 16'd1;
-        target_dataslot_slotoffset <= ds_offset;
-        target_dataslot_bridgeaddr <= 32'h70000000;
-        target_dataslot_length     <= CHUNK_SIZE;
-        target_dataslot_read       <= 1;
-        ds_state <= DS_ACK;
+        if (ds_remaining == 0) begin
+            ds_state <= DS_DONE;
+        end else begin
+            // Request next chunk — clamp to remaining bytes
+            dl_chunk_start <= 1;
+            dl_dma_active  <= 1;
+            ds_timeout     <= 27'd74250000;
+            ds_cur_chunk   <= (ds_remaining > CHUNK_SIZE) ? CHUNK_SIZE : ds_remaining;
+            target_dataslot_id         <= 16'd1;
+            target_dataslot_slotoffset <= ds_offset;
+            target_dataslot_bridgeaddr <= 32'h70000000;
+            target_dataslot_length     <= (ds_remaining > CHUNK_SIZE) ? CHUNK_SIZE : ds_remaining;
+            target_dataslot_read       <= 1;
+            ds_state <= DS_ACK;
+        end
     end
 
     DS_ACK: begin
@@ -681,8 +690,8 @@ always @(posedge clk_74a) begin
         ds_timeout <= ds_timeout - 1'd1;
         if (target_dataslot_done) begin
             dl_dma_active <= 0;
-            ds_chunk_bytes <= dl_buf_wrptr;
-            if (target_dataslot_err != 0 || dl_buf_wrptr == 0) begin
+            ds_chunk_bytes <= ds_cur_chunk; // use requested size, not wrptr
+            if (target_dataslot_err != 0) begin
                 ds_state <= DS_DONE;
             end else begin
                 ds_emit_req <= ~ds_emit_req;
@@ -690,17 +699,16 @@ always @(posedge clk_74a) begin
             end
         end
         else if (ds_timeout == 0) begin
-            // Timeout — DMA command didn't complete, give up
             dl_dma_active <= 0;
             ds_state <= DS_DONE;
         end
     end
 
     DS_EMIT: begin
-        // Wait for playback to finish (ds_emit_ack matches ds_emit_req)
         if (ds_emit_ack == ds_emit_req) begin
-            ds_offset <= ds_offset + CHUNK_SIZE;
-            ds_state  <= DS_CHUNK;
+            ds_offset    <= ds_offset + ds_cur_chunk;
+            ds_remaining <= ds_remaining - ds_cur_chunk;
+            ds_state     <= DS_CHUNK;
         end
     end
 
