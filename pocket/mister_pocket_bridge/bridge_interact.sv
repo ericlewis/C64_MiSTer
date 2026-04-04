@@ -25,7 +25,7 @@ module bridge_interact #(
     input         bridge_wr,
     input  [31:0] bridge_wr_data,
     input         bridge_rd,
-    output reg [31:0] bridge_rd_data,
+    output [31:0] bridge_rd_data,
 
     // MiSTer-compatible status output (active on clk_sys)
     output reg [127:0] status
@@ -41,20 +41,18 @@ initial begin
         regs_74a[k] = 32'd0;
 end
 
-// Handle bridge reads and writes
+// Write: registered
 always @(posedge clk_74a) begin
     if (bridge_wr && bridge_addr[31:16] == 16'h0000) begin
         if (bridge_addr[7:2] < NUM_REGS[5:0])
             regs_74a[bridge_addr[7:2]] <= bridge_wr_data;
     end
-
-    if (bridge_rd && bridge_addr[31:16] == 16'h0000) begin
-        if (bridge_addr[7:2] < NUM_REGS[5:0])
-            bridge_rd_data <= regs_74a[bridge_addr[7:2]];
-        else
-            bridge_rd_data <= 32'd0;
-    end
 end
+
+// Read: COMBINATIONAL — Pocket expects data immediately on bridge_rd
+assign bridge_rd_data = (bridge_addr[31:16] == 16'h0000 && bridge_addr[7:2] < NUM_REGS[5:0])
+                        ? regs_74a[bridge_addr[7:2]]
+                        : 32'd0;
 
 // Synchronize register values to clk_sys domain
 // Double-flop each register value (safe since these are quasi-static config values)
