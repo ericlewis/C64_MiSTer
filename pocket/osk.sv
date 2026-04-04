@@ -137,13 +137,18 @@ reg       shifted = 0;
 reg [15:0] prev_keys;
 wire [15:0] key_press = keys & ~prev_keys;
 
-// Navigation throttle (~8 Hz at 12 MHz = every ~1.5M clocks)
+// Navigation: instant on first press, then repeat at ~8 Hz while held
 reg [20:0] nav_timer = 0;
-reg        nav_ready;
+wire [3:0] dpad = keys[3:0];
+wire [3:0] dpad_press = dpad & ~prev_keys[3:0]; // edge detect
+wire       dpad_held = |dpad;                     // any direction held
+wire       nav_move = |dpad_press || (dpad_held && nav_timer == 0);
 
 always @(posedge clk) begin
-    nav_timer <= nav_timer + 1'd1;
-    nav_ready <= (nav_timer == 0);
+    if (dpad_held)
+        nav_timer <= nav_timer + 1'd1;
+    else
+        nav_timer <= 0; // reset on release for instant response next press
 end
 
 // Character lookup for current selection (combinational)
@@ -170,12 +175,12 @@ always @(posedge clk) begin
         osk_active <= 0;
     end
     else if (osk_active) begin
-        // Navigation
-        if (nav_ready) begin
-            if (keys[0] && sel_row > 0) sel_row <= sel_row - 1'd1;           // Up
-            if (keys[1] && sel_row < ROWS-1) sel_row <= sel_row + 1'd1;      // Down
-            if (keys[2] && sel_col > 0) sel_col <= sel_col - 1'd1;           // Left
-            if (keys[3] && sel_col < row_len[sel_row]-1) sel_col <= sel_col + 1'd1; // Right
+        // Navigation: instant on press, repeat while held
+        if (nav_move) begin
+            if (dpad[0] && sel_row > 0) sel_row <= sel_row - 1'd1;           // Up
+            if (dpad[1] && sel_row < ROWS-1) sel_row <= sel_row + 1'd1;      // Down
+            if (dpad[2] && sel_col > 0) sel_col <= sel_col - 1'd1;           // Left
+            if (dpad[3] && sel_col < row_len[sel_row]-1) sel_col <= sel_col + 1'd1; // Right
         end
 
         // Clamp column to row length
