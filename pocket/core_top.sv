@@ -856,8 +856,9 @@ always @(posedge clk_sys) begin
     ioctl_data     <= dl_data;
     ioctl_index    <= chip32_ft_s1; // dynamic: PRG/CRT/ROM from Chip32
 
-    // Detect falling edge of combined download = load complete
-    if (combined_dl_prev & ~combined_dl)
+    // Detect falling edge of combined download = PRG load complete
+    // Only toggle for PRG files — ROM/CRT/D64 don't use the PRG fifo path
+    if (combined_dl_prev & ~combined_dl & (chip32_ft_s1 == 8'h01))
         prg_load_done <= ~prg_load_done;
 end
 
