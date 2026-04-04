@@ -199,6 +199,12 @@ always @(posedge clk) begin
         // Enter (X button)
         if (key_press[6]) osk_enter <= 1;
 
+        // Space (Start button)
+        if (key_press[15]) begin
+            osk_char <= " ";
+            osk_char_valid <= 1;
+        end
+
         // Shift toggle (L+R shoulders: bits 8 and 9)
         if (keys[8] & keys[9] & ~(prev_keys[8] & prev_keys[9]))
             shifted <= ~shifted;
@@ -234,9 +240,9 @@ wire [5:0] render_key_idx = render_row * MAX_COLS + render_col;
 wire [7:0] render_char = shifted ? key_char_shifted[render_key_idx]
                                  : key_char_normal[render_key_idx];
 // Map special chars to display glyphs
-wire [6:0] glyph = (render_char == 8'h08) ? 7'h11 :  // ← arrow for BS
-                   (render_char == 8'h0D) ? 7'h11 :  // ← arrow for RET
-                   (render_char == " ")   ? 7'h5F :  // _ for SPC
+wire [6:0] glyph = (render_char == 8'h08) ? 7'h3C :  // < for BS
+                   (render_char == 8'h0D) ? 7'h3E :  // > for RET
+                   (render_char == " ")   ? 7'h2D :  // - for SPC (visible)
                    render_char[6:0];
 
 assign osk_font_addr = {glyph, char_py};
