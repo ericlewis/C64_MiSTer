@@ -67,7 +67,7 @@ assign key_char_normal[17] = "t"; assign key_char_normal[18] = "y";
 assign key_char_normal[19] = "u"; assign key_char_normal[20] = "i";
 assign key_char_normal[21] = "o"; assign key_char_normal[22] = "p";
 assign key_char_normal[23] = "["; assign key_char_normal[24] = "]";
-assign key_char_normal[25] = "\\";
+assign key_char_normal[25] = 8'h5C; // backslash
 // Row 2
 assign key_char_normal[26] = "a"; assign key_char_normal[27] = "s";
 assign key_char_normal[28] = "d"; assign key_char_normal[29] = "f";
@@ -107,7 +107,7 @@ assign key_char_shifted[28] = "D"; assign key_char_shifted[29] = "F";
 assign key_char_shifted[30] = "G"; assign key_char_shifted[31] = "H";
 assign key_char_shifted[32] = "J"; assign key_char_shifted[33] = "K";
 assign key_char_shifted[34] = "L"; assign key_char_shifted[35] = ":";
-assign key_char_shifted[36] = "\""; assign key_char_shifted[37] = 8'h0D;
+assign key_char_shifted[36] = 8'h22; assign key_char_shifted[37] = 8'h0D; // double-quote
 assign key_char_shifted[38] = 8'h00;
 assign key_char_shifted[39] = "Z"; assign key_char_shifted[40] = "X";
 assign key_char_shifted[41] = "C"; assign key_char_shifted[42] = "V";

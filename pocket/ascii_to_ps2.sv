@@ -66,11 +66,11 @@ always @(*) begin
     "[", "{": begin scancode = 8'h54; needs_shift = (ascii == "{"); end
     "]", "}": begin scancode = 8'h5B; needs_shift = (ascii == "}"); end
     ";", ":": begin scancode = 8'h4C; needs_shift = (ascii == ":"); end
-    "'", "\"": begin scancode = 8'h52; needs_shift = (ascii == "\""); end
+    "'", 8'h22: begin scancode = 8'h52; needs_shift = (ascii == 8'h22); end // apostrophe, double-quote
     ",", "<": begin scancode = 8'h41; needs_shift = (ascii == "<"); end
     ".", ">": begin scancode = 8'h49; needs_shift = (ascii == ">"); end
     "/", "?": begin scancode = 8'h4A; needs_shift = (ascii == "?"); end
-    "\\", "|": begin scancode = 8'h5D; needs_shift = (ascii == "|"); end
+    8'h5C, "|": begin scancode = 8'h5D; needs_shift = (ascii == "|"); end // backslash, pipe
 
     default: begin scancode = 8'h00; end
     endcase
