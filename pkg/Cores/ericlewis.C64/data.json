@@ -4,10 +4,18 @@
     "data_slots": [
       {
         "id": 0,
-        "name": "Load Game",
+        "name": "System ROM",
         "required": true,
+        "parameters": "0x2",
+        "filename": "c64_system.bin",
+        "address": "0x10000000"
+      },
+      {
+        "id": 1,
+        "name": "Load Game",
+        "required": false,
         "parameters": "0x201",
-        "extensions": ["prg", "crt"],
+        "extensions": ["d64", "g64", "prg", "crt", "t64"],
         "address": "0x10000000"
       }
     ]

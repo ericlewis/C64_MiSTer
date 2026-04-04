@@ -189,10 +189,12 @@ assign vpll_feed = 1'bZ;
 
 wire [31:0] cmd_bridge_rd_data;
 wire [31:0] interact_bridge_rd_data;
+wire [31:0] chip32_bridge_rd_data;
 
 always @(*) begin
     casex (bridge_addr)
     32'h00xxxxxx: bridge_rd_data <= interact_bridge_rd_data;
+    32'h501xxxxx: bridge_rd_data <= chip32_bridge_rd_data;
     32'hF8xxxxxx: bridge_rd_data <= cmd_bridge_rd_data;
     default:      bridge_rd_data <= 32'd0;
     endcase
@@ -341,6 +343,35 @@ bridge_interact #(.NUM_REGS(16)) interact_bridge (
     .bridge_rd_data (interact_bridge_rd_data),
     .status         (status)
 );
+
+// ========================================================================
+//  Chip32 Communication Registers (clk_74a domain)
+//
+//  Chip32 VM writes these via pmpw to signal file type and load events.
+//  0x50100000 = file_type  (0x01=PRG, 0x08=ROM, 0x41=CRT, 0x80=D64)
+//  0x50100004 = file_size  (bytes, used for img_size on D64 mount)
+//  0x50100008 = trigger    (write toggles load-complete signal)
+// ========================================================================
+
+reg  [7:0] chip32_file_type_74a = 8'h01; // default PRG for backward compat
+reg [31:0] chip32_file_size_74a = 0;
+reg        chip32_trigger_toggle_74a = 0;
+
+always @(posedge clk_74a) begin
+    if (bridge_wr && bridge_addr[31:20] == 12'h501) begin
+        case (bridge_addr[7:0])
+            8'h00: chip32_file_type_74a    <= bridge_wr_data[7:0];
+            8'h04: chip32_file_size_74a    <= bridge_wr_data;
+            8'h08: chip32_trigger_toggle_74a <= ~chip32_trigger_toggle_74a;
+        endcase
+    end
+end
+
+assign chip32_bridge_rd_data =
+    (bridge_addr[7:0] == 8'h00) ? {24'd0, chip32_file_type_74a} :
+    (bridge_addr[7:0] == 8'h04) ? chip32_file_size_74a :
+    (bridge_addr[7:0] == 8'h08) ? {31'd0, chip32_trigger_toggle_74a} :
+    32'd0;
 
 // ========================================================================
 //  Clock Generation
@@ -627,16 +658,28 @@ sdram sdram_inst (
     .clk     (clk64),
     .init    (~pll_core_locked),
     .refresh (refresh),
-    .addr    (io_cycle ? (cart_mem_req ? cart_addr   : io_cycle_addr)
-                       :                               cart_addr),
-    .ce      (io_cycle ? (cart_mem_req ? cart_ce     : io_cycle_ce)
+    .addr    (io_cycle ? (cart_mem_req ? cart_addr   :
+                          io_cycle_ce  ? io_cycle_addr :
+                          disk_ce_w    ? disk_addr_w   : cart_addr)
+                       :                                 cart_addr),
+    .ce      (io_cycle ? (cart_mem_req ? cart_ce     :
+                          io_cycle_ce  ? 1'b1        :
+                          disk_ce_w    ? 1'b1        : cart_ce)
                        :                               cart_ce),
-    .we      (io_cycle ? (cart_mem_req ? cart_we     : io_cycle_we)
+    .we      (io_cycle ? (cart_mem_req ? cart_we     :
+                          io_cycle_ce  ? io_cycle_we :
+                          disk_ce_w    ? disk_we_w   : cart_we)
                        :                               cart_we),
-    .din     (io_cycle ? (cart_mem_req ? cart_wrdata : io_cycle_data)
+    .din     (io_cycle ? (cart_mem_req ? cart_wrdata :
+                          io_cycle_ce  ? io_cycle_data :
+                          disk_ce_w    ? disk_dout_w : cart_wrdata)
                        :                               cart_wrdata),
     .dout    (sdram_data)
 );
+
+// disk_ready: asserts when disk_loader was the winning SDRAM client
+always @(posedge clk_sys)
+    disk_ready_r <= io_cycle && !cart_mem_req && !io_cycle_ce && disk_ce_w;
 
 // ========================================================================
 //  Reset
@@ -768,6 +811,11 @@ always @(posedge clk_74a) begin
     else if (dataslot_allcomplete) is_downloading <= 0;
 end
 
+// CDC: Chip32 registers (clk_74a → clk_sys)
+reg  [7:0] chip32_ft_s0 = 8'h01, chip32_ft_s1 = 8'h01;
+reg [31:0] chip32_fs_s0 = 0,     chip32_fs_s1 = 0;
+reg        chip32_trig_s0 = 0, chip32_trig_s1 = 0, chip32_trig_prev = 0;
+
 // Sync to clk_sys
 reg dl_s0 = 0, dl_s1 = 0, dl_prev = 0;
 
@@ -776,16 +824,27 @@ always @(posedge clk_sys) begin
     dl_s1 <= dl_s0;
     dl_prev <= dl_s1;
 
+    // Chip32 register CDC
+    chip32_ft_s0   <= chip32_file_type_74a;
+    chip32_ft_s1   <= chip32_ft_s0;
+    chip32_fs_s0   <= chip32_file_size_74a;
+    chip32_fs_s1   <= chip32_fs_s0;
+    chip32_trig_s0 <= chip32_trigger_toggle_74a;
+    chip32_trig_s1 <= chip32_trig_s0;
+    chip32_trig_prev <= chip32_trig_s1;
+
     ioctl_download <= dl_s1;
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= dl_addr[24:0];
     ioctl_data     <= dl_data;
-    ioctl_index    <= 8'h01; // PRG
+    ioctl_index    <= chip32_ft_s1; // dynamic: PRG/CRT/ROM from Chip32
 
     // Detect falling edge = download complete
     if (dl_prev & ~dl_s1)
         prg_load_done <= ~prg_load_done;
 end
+
+wire chip32_trigger_edge = chip32_trig_s1 ^ chip32_trig_prev;
 
 // ========================================================================
 //  C64 Core
@@ -1105,11 +1164,24 @@ always @(posedge clk_sys) begin
     end
 end
 
-// Disk image mount tracking
+// Disk image mount tracking — pulsed by Chip32 trigger when file_type == D64
 reg        img_mounted = 0;
 reg [31:0] img_size = 0;
 
+always @(posedge clk_sys) begin
+    img_mounted <= 0; // single-cycle pulse
+    if (chip32_trigger_edge && chip32_ft_s1 == 8'h80) begin
+        img_mounted <= 1;
+        img_size    <= chip32_fs_s1;
+    end
+end
+
 // Disk loader: sd_lba → SDRAM sector serving
+wire        disk_ce_w, disk_we_w;
+wire [24:0] disk_addr_w;
+wire  [7:0] disk_dout_w;
+reg         disk_ready_r = 0;
+
 disk_loader #(.DISK_BASE_ADDR(25'h0400000)) disk_loader_inst (
     .clk_sys      (clk_sys),
     .reset        (~c64_reset_n),
@@ -1125,12 +1197,12 @@ disk_loader #(.DISK_BASE_ADDR(25'h0400000)) disk_loader_inst (
     .img_mounted  (img_mounted),
     .img_size     (img_size),
     .img_readonly (),
-    .disk_ce      (),
-    .disk_we      (),
-    .disk_addr    (),
-    .disk_dout    (),
+    .disk_ce      (disk_ce_w),
+    .disk_we      (disk_we_w),
+    .disk_addr    (disk_addr_w),
+    .disk_dout    (disk_dout_w),
     .disk_din     (sdram_data),
-    .disk_ready   (1'b1)
+    .disk_ready   (disk_ready_r)
 );
 
 // ========================================================================
