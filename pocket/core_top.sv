@@ -459,7 +459,7 @@ ascii_to_ps2 osk_ps2_conv (
 
 reg [7:0]  osk_inject_char;
 reg [2:0]  osk_inject_state = 0;
-reg [15:0] osk_inject_timer = 0;
+reg [19:0] osk_inject_timer = 0;
 reg [10:0] osk_inject_key = 0;
 reg        osk_inject_active = 0;
 reg        osk_toggle_bit = 0;
@@ -542,7 +542,7 @@ always @(posedge clk_sys) begin
     OSK_INJ_SHIFT_DN: begin
         // Hold shift-down key signal, wait for C64 to process
         osk_inject_timer <= osk_inject_timer + 1'd1;
-        if (osk_inject_timer == 16'h7FFF) begin
+        if (osk_inject_timer == 20'hFFFFF) begin
             osk_inject_state <= OSK_INJ_KEY_DN;
             osk_inject_timer <= 0;
             osk_toggle_bit <= ~osk_toggle_bit;
@@ -551,7 +551,7 @@ always @(posedge clk_sys) begin
     end
     OSK_INJ_KEY_DN: begin
         osk_inject_timer <= osk_inject_timer + 1'd1;
-        if (osk_inject_timer == 16'h7FFF) begin
+        if (osk_inject_timer == 20'hFFFFF) begin
             osk_inject_state <= OSK_INJ_KEY_UP;
             osk_inject_timer <= 0;
             osk_toggle_bit <= ~osk_toggle_bit;
@@ -560,7 +560,7 @@ always @(posedge clk_sys) begin
     end
     OSK_INJ_KEY_UP: begin
         osk_inject_timer <= osk_inject_timer + 1'd1;
-        if (osk_inject_timer == 16'h7FFF) begin
+        if (osk_inject_timer == 20'hFFFFF) begin
             if (osk_latched_shift) begin
                 osk_inject_state <= OSK_INJ_SHIFT_UP;
                 osk_toggle_bit <= ~osk_toggle_bit;
@@ -573,7 +573,7 @@ always @(posedge clk_sys) begin
     end
     OSK_INJ_SHIFT_UP: begin
         osk_inject_timer <= osk_inject_timer + 1'd1;
-        if (osk_inject_timer == 16'h7FFF) begin
+        if (osk_inject_timer == 20'hFFFFF) begin
             osk_inject_state <= OSK_INJ_DONE;
             osk_inject_timer <= 0;
         end
