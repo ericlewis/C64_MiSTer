@@ -401,18 +401,22 @@ wire [9:0] osk_font_addr;
 reg  [7:0] osk_font_data;
 always @(posedge clk_vid) osk_font_data <= osk_font_rom[osk_font_addr];
 
-// Pixel counters in clk_vid domain (derived from sync signals)
+// Pixel counters in clk_vid domain — count only within active (DE) area
+wire vid_de_raw = ~vid_hb & ~vid_vb;
 reg [9:0] osk_h_cnt = 0, osk_v_cnt = 0;
-reg       prev_vid_hs, prev_vid_vs;
+reg       prev_de, prev_vid_vb;
 always @(posedge clk_vid) begin
-    prev_vid_hs <= vid_hs;
-    prev_vid_vs <= vid_vs;
-    osk_h_cnt <= osk_h_cnt + 1'd1;
-    if (vid_hs & ~prev_vid_hs) begin // hsync rising edge
+    prev_de <= vid_de_raw;
+    prev_vid_vb <= vid_vb;
+    if (vid_de_raw)
+        osk_h_cnt <= osk_h_cnt + 1'd1;
+    // Rising edge of DE = start of new active line
+    if (vid_de_raw & ~prev_de) begin
         osk_h_cnt <= 0;
-        osk_v_cnt <= osk_v_cnt + 1'd1;
+        if (!vid_vb) osk_v_cnt <= osk_v_cnt + 1'd1;
     end
-    if (vid_vs & ~prev_vid_vs) osk_v_cnt <= 0;
+    // Start of vblank resets vertical counter
+    if (vid_vb & ~prev_vid_vb) osk_v_cnt <= 0;
 end
 
 // OSK toggle: L+R shoulders
@@ -648,7 +652,16 @@ end
 //  Input mapping
 // ========================================================================
 
-wire [6:0] joyA_c64 = {cont1_key[7], cont1_key[5], cont1_key[4],
+// Sync osk_active from clk_vid to clk_sys
+reg osk_active_s0, osk_active_s1;
+always @(posedge clk_sys) begin
+    osk_active_s0 <= osk_active;
+    osk_active_s1 <= osk_active_s0;
+end
+
+// Block P1 joystick when OSK is active (OSK consumes d-pad + face buttons)
+wire [6:0] joyA_c64 = osk_active_s1 ? 7'd0 :
+                       {cont1_key[7], cont1_key[5], cont1_key[4],
                         cont1_key[0], cont1_key[1], cont1_key[2], cont1_key[3]};
 wire [6:0] joyB_c64 = {cont2_key[7], cont2_key[5], cont2_key[4],
                         cont2_key[0], cont2_key[1], cont2_key[2], cont2_key[3]};
