@@ -425,7 +425,7 @@ wire        osk_char_valid, osk_backspace, osk_enter;
 wire [23:0] c64_rgb = {vid_r, vid_g, vid_b};
 wire [23:0] osk_rgb_out;
 
-osk #(.H_ACTIVE(384), .V_ACTIVE(272)) osk_inst (
+osk #(.H_ACTIVE(320), .V_ACTIVE(240), .KEY_W(20), .KEY_H(14)) osk_inst (
     .clk          (clk_vid),
     .reset_n      (c64_reset_n),
     .keys         (cont1_key[15:0]),

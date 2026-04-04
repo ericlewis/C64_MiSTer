@@ -137,14 +137,18 @@ reg       shifted = 0;
 reg [15:0] prev_keys;
 wire [15:0] key_press = keys & ~prev_keys;
 
-// Navigation throttle
-reg [17:0] nav_timer = 0;
+// Navigation throttle (~8 Hz at 12 MHz = every ~1.5M clocks)
+reg [20:0] nav_timer = 0;
 reg        nav_ready;
 
 always @(posedge clk) begin
     nav_timer <= nav_timer + 1'd1;
     nav_ready <= (nav_timer == 0);
 end
+
+// Character lookup for current selection (combinational)
+wire [7:0] sel_char_lookup = shifted ? key_char_shifted[sel_row * MAX_COLS + sel_col]
+                                     : key_char_normal[sel_row * MAX_COLS + sel_col];
 
 // ======== Input Handling ========
 reg prev_toggle;
@@ -180,11 +184,10 @@ always @(posedge clk) begin
 
         // Select (A button)
         if (key_press[4]) begin
-            osk_char <= shifted ? key_char_shifted[sel_row * MAX_COLS + sel_col]
-                                : key_char_normal[sel_row * MAX_COLS + sel_col];
-            if (osk_char == 8'h08)
+            osk_char <= sel_char_lookup;
+            if (sel_char_lookup == 8'h08)
                 osk_backspace <= 1;
-            else if (osk_char == 8'h0D)
+            else if (sel_char_lookup == 8'h0D)
                 osk_enter <= 1;
             else
                 osk_char_valid <= 1;
