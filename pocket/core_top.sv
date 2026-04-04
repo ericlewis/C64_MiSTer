@@ -389,7 +389,168 @@ always @(posedge clk_vid) begin
 end
 
 
-assign video_rgb = (~vid_hb & ~vid_vb) ? {vid_r, vid_g, vid_b} : 24'd0;
+// ========================================================================
+//  On-Screen Keyboard
+// ========================================================================
+
+// Font ROM for OSK labels
+reg [7:0] osk_font_rom [0:1023];
+initial $readmemh("font8x8.hex", osk_font_rom);
+
+wire [9:0] osk_font_addr;
+reg  [7:0] osk_font_data;
+always @(posedge clk_vid) osk_font_data <= osk_font_rom[osk_font_addr];
+
+// Pixel counters in clk_vid domain (derived from sync signals)
+reg [9:0] osk_h_cnt = 0, osk_v_cnt = 0;
+reg       prev_vid_hs, prev_vid_vs;
+always @(posedge clk_vid) begin
+    prev_vid_hs <= vid_hs;
+    prev_vid_vs <= vid_vs;
+    osk_h_cnt <= osk_h_cnt + 1'd1;
+    if (vid_hs & ~prev_vid_hs) begin // hsync rising edge
+        osk_h_cnt <= 0;
+        osk_v_cnt <= osk_v_cnt + 1'd1;
+    end
+    if (vid_vs & ~prev_vid_vs) osk_v_cnt <= 0;
+end
+
+// OSK toggle: L+R shoulders
+wire osk_toggle = cont1_key[8] & cont1_key[9];
+
+// OSK instance
+wire        osk_active;
+wire [7:0]  osk_char;
+wire        osk_char_valid, osk_backspace, osk_enter;
+wire [23:0] c64_rgb = {vid_r, vid_g, vid_b};
+wire [23:0] osk_rgb_out;
+
+osk #(.H_ACTIVE(384), .V_ACTIVE(272)) osk_inst (
+    .clk          (clk_vid),
+    .reset_n      (c64_reset_n),
+    .keys         (cont1_key[15:0]),
+    .toggle_in    (osk_toggle),
+    .osk_active   (osk_active),
+    .osk_char     (osk_char),
+    .osk_char_valid(osk_char_valid),
+    .osk_backspace(osk_backspace),
+    .osk_enter    (osk_enter),
+    .h_cnt        (osk_h_cnt),
+    .v_cnt        (osk_v_cnt),
+    .rgb_in       (c64_rgb),
+    .rgb_out      (osk_rgb_out),
+    .osk_font_addr(osk_font_addr),
+    .osk_font_data(osk_font_data)
+);
+
+// OSK → PS/2 injection state machine
+wire       osk_needs_shift;
+wire [7:0] osk_scancode;
+
+ascii_to_ps2 osk_ps2_conv (
+    .ascii      (osk_inject_char),
+    .needs_shift(osk_needs_shift),
+    .scancode   (osk_scancode)
+);
+
+reg [7:0]  osk_inject_char;
+reg [2:0]  osk_inject_state = 0;
+reg [15:0] osk_inject_timer = 0;
+reg [10:0] osk_inject_key;
+reg        osk_inject_active = 0;
+
+localparam OSK_INJ_IDLE     = 0;
+localparam OSK_INJ_SHIFT_DN = 1;
+localparam OSK_INJ_KEY_DN   = 2;
+localparam OSK_INJ_KEY_UP   = 3;
+localparam OSK_INJ_SHIFT_UP = 4;
+localparam OSK_INJ_DONE     = 5;
+
+// Sync OSK signals from clk_vid to clk_sys
+reg osk_char_valid_s0, osk_char_valid_s1, osk_char_valid_prev;
+reg osk_bs_s0, osk_bs_s1, osk_bs_prev;
+reg osk_enter_s0, osk_enter_s1, osk_enter_prev;
+reg [7:0] osk_char_s0, osk_char_s1;
+
+always @(posedge clk_sys) begin
+    osk_char_valid_s0 <= osk_char_valid;
+    osk_char_valid_s1 <= osk_char_valid_s0;
+    osk_char_valid_prev <= osk_char_valid_s1;
+    osk_bs_s0 <= osk_backspace;
+    osk_bs_s1 <= osk_bs_s0;
+    osk_bs_prev <= osk_bs_s1;
+    osk_enter_s0 <= osk_enter;
+    osk_enter_s1 <= osk_enter_s0;
+    osk_enter_prev <= osk_enter_s1;
+    osk_char_s0 <= osk_char;
+    osk_char_s1 <= osk_char_s0;
+end
+
+wire osk_char_edge  = osk_char_valid_s1 & ~osk_char_valid_prev;
+wire osk_bs_edge    = osk_bs_s1 & ~osk_bs_prev;
+wire osk_enter_edge = osk_enter_s1 & ~osk_enter_prev;
+
+always @(posedge clk_sys) begin
+    case (osk_inject_state)
+    OSK_INJ_IDLE: begin
+        osk_inject_active <= 0;
+        if (osk_char_edge) begin
+            osk_inject_char <= osk_char_s1;
+            osk_inject_state <= osk_needs_shift ? OSK_INJ_SHIFT_DN : OSK_INJ_KEY_DN;
+            osk_inject_active <= 1;
+            osk_inject_timer <= 0;
+        end else if (osk_bs_edge) begin
+            osk_inject_char <= 8'h08;
+            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_inject_active <= 1;
+            osk_inject_timer <= 0;
+        end else if (osk_enter_edge) begin
+            osk_inject_char <= 8'h0D;
+            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_inject_active <= 1;
+            osk_inject_timer <= 0;
+        end
+    end
+    OSK_INJ_SHIFT_DN: begin
+        osk_inject_key <= {~osk_inject_key[10], 1'b1, 1'b0, 8'h12}; // Left Shift down
+        osk_inject_timer <= osk_inject_timer + 1'd1;
+        if (osk_inject_timer == 16'h7FFF) begin
+            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_inject_timer <= 0;
+        end
+    end
+    OSK_INJ_KEY_DN: begin
+        osk_inject_key <= {~osk_inject_key[10], 1'b1, 1'b0, osk_scancode};
+        osk_inject_timer <= osk_inject_timer + 1'd1;
+        if (osk_inject_timer == 16'h7FFF) begin
+            osk_inject_state <= OSK_INJ_KEY_UP;
+            osk_inject_timer <= 0;
+        end
+    end
+    OSK_INJ_KEY_UP: begin
+        osk_inject_key <= {~osk_inject_key[10], 1'b0, 1'b0, osk_scancode};
+        osk_inject_timer <= osk_inject_timer + 1'd1;
+        if (osk_inject_timer == 16'h7FFF) begin
+            osk_inject_state <= osk_needs_shift ? OSK_INJ_SHIFT_UP : OSK_INJ_DONE;
+            osk_inject_timer <= 0;
+        end
+    end
+    OSK_INJ_SHIFT_UP: begin
+        osk_inject_key <= {~osk_inject_key[10], 1'b0, 1'b0, 8'h12};
+        osk_inject_timer <= osk_inject_timer + 1'd1;
+        if (osk_inject_timer == 16'h7FFF) begin
+            osk_inject_state <= OSK_INJ_DONE;
+            osk_inject_timer <= 0;
+        end
+    end
+    OSK_INJ_DONE: begin
+        osk_inject_active <= 0;
+        osk_inject_state <= OSK_INJ_IDLE;
+    end
+    endcase
+end
+
+assign video_rgb = (~vid_hb & ~vid_vb) ? osk_rgb_out : 24'd0;
 assign video_de  = ~vid_hb & ~vid_vb;
 assign video_vs  = vid_vs;
 assign video_hs  = vid_hs;
@@ -641,8 +802,8 @@ always @(posedge clk_sys) begin
     end
     else begin
         to <= 0;
-        // When not injecting auto-RUN, pass through dock keyboard
-        key <= dock_ps2_key;
+        // When not injecting auto-RUN, pass through OSK or dock keyboard
+        key <= osk_inject_active ? osk_inject_key : dock_ps2_key;
     end
 
     if (start_strk) begin
