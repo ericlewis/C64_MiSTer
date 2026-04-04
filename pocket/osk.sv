@@ -10,8 +10,6 @@
 module osk #(
     parameter H_ACTIVE = 320,
     parameter V_ACTIVE = 240,
-    parameter KEY_W    = 24,    // key cell width in pixels
-    parameter KEY_H    = 16,    // key cell height in pixels
     parameter ROWS     = 5,
     parameter MAX_COLS = 14
 ) (
@@ -252,8 +250,11 @@ always @(posedge clk) begin
 end
 
 // ======== Video Rendering ========
+// Auto-compute key size to span full width
+localparam KEY_W = H_ACTIVE / MAX_COLS;
+localparam KEY_H = KEY_W * 2 / 3;  // ~2:3 aspect ratio for keys
 localparam OSK_Y_START = V_ACTIVE - KEY_H * ROWS;
-localparam OSK_X_START = (H_ACTIVE - KEY_W * MAX_COLS) / 2;
+localparam OSK_X_START = (H_ACTIVE - KEY_W * MAX_COLS) / 2; // center remainder
 
 wire in_osk_area = osk_active &&
                    (v_cnt >= OSK_Y_START) && (v_cnt < V_ACTIVE) &&
