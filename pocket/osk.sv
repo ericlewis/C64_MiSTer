@@ -146,20 +146,18 @@ always @(posedge clk) begin
     nav_ready <= (nav_timer == 0);
 end
 
-// Toggle
+// ======== Input Handling ========
 reg prev_toggle;
 always @(posedge clk) begin
     prev_toggle <= toggle_in;
-    if (toggle_in & ~prev_toggle)
-        osk_active <= ~osk_active;
-end
-
-// ======== Input Handling ========
-always @(posedge clk) begin
     prev_keys <= keys;
     osk_char_valid <= 0;
     osk_backspace  <= 0;
     osk_enter      <= 0;
+
+    // Toggle OSK on/off
+    if (toggle_in & ~prev_toggle)
+        osk_active <= ~osk_active;
 
     if (!reset_n) begin
         sel_row <= 0;
