@@ -356,13 +356,20 @@ bridge_interact #(.NUM_REGS(16)) interact_bridge (
 reg  [7:0] chip32_file_type_74a = 8'h01; // default PRG for backward compat
 reg [31:0] chip32_file_size_74a = 0;
 reg        chip32_trigger_toggle_74a = 0;
+reg        chip32_downloading_74a = 0;    // high between file_type write and trigger
 
 always @(posedge clk_74a) begin
     if (bridge_wr && bridge_addr[31:20] == 12'h501) begin
         case (bridge_addr[7:0])
-            8'h00: chip32_file_type_74a    <= bridge_wr_data[7:0];
-            8'h04: chip32_file_size_74a    <= bridge_wr_data;
-            8'h08: chip32_trigger_toggle_74a <= ~chip32_trigger_toggle_74a;
+            8'h00: begin
+                chip32_file_type_74a    <= bridge_wr_data[7:0];
+                chip32_downloading_74a  <= 1;  // file_type write = start
+            end
+            8'h04: chip32_file_size_74a <= bridge_wr_data;
+            8'h08: begin
+                chip32_trigger_toggle_74a <= ~chip32_trigger_toggle_74a;
+                chip32_downloading_74a    <= 0;  // trigger = done
+            end
         endcase
     end
 end
@@ -815,16 +822,23 @@ end
 reg  [7:0] chip32_ft_s0 = 8'h01, chip32_ft_s1 = 8'h01;
 reg [31:0] chip32_fs_s0 = 0,     chip32_fs_s1 = 0;
 reg        chip32_trig_s0 = 0, chip32_trig_s1 = 0, chip32_trig_prev = 0;
+reg        chip32_dl_s0 = 0, chip32_dl_s1 = 0;
 
 // Sync to clk_sys
-reg dl_s0 = 0, dl_s1 = 0, dl_prev = 0;
+reg dl_s0 = 0, dl_s1 = 0;
+reg combined_dl_prev = 0;
+wire combined_dl;
 
 always @(posedge clk_sys) begin
+    // CDC: dataslot-based downloading (from LOADF)
     dl_s0 <= is_downloading;
     dl_s1 <= dl_s0;
-    dl_prev <= dl_s1;
 
-    // Chip32 register CDC
+    // CDC: Chip32 downloading (from COPY — file_type write to trigger)
+    chip32_dl_s0 <= chip32_downloading_74a;
+    chip32_dl_s1 <= chip32_dl_s0;
+
+    // CDC: Chip32 register values
     chip32_ft_s0   <= chip32_file_type_74a;
     chip32_ft_s1   <= chip32_ft_s0;
     chip32_fs_s0   <= chip32_file_size_74a;
@@ -833,16 +847,22 @@ always @(posedge clk_sys) begin
     chip32_trig_s1 <= chip32_trig_s0;
     chip32_trig_prev <= chip32_trig_s1;
 
-    ioctl_download <= dl_s1;
+    // Combined download: either LOADF (dataslot) or COPY (chip32)
+    combined_dl_prev <= combined_dl;
+
+    ioctl_download <= combined_dl;
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= dl_addr[24:0];
     ioctl_data     <= dl_data;
     ioctl_index    <= chip32_ft_s1; // dynamic: PRG/CRT/ROM from Chip32
 
-    // Detect falling edge = download complete
-    if (dl_prev & ~dl_s1)
+    // Detect falling edge of combined download = load complete
+    if (combined_dl_prev & ~combined_dl)
         prg_load_done <= ~prg_load_done;
 end
+
+// ioctl_download is high when EITHER dataslot OR chip32 says we're downloading
+assign combined_dl = dl_s1 | chip32_dl_s1;
 
 wire chip32_trigger_edge = chip32_trig_s1 ^ chip32_trig_prev;
 

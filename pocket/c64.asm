@@ -100,13 +100,21 @@ rom_skip_core:
                 or r13,#bit_coreloaded
 rom_run:
                 host r0,r0
+
+                // After ROM load, also try to load game slot if file is cached
+                ld r3,#SLOT_GAME
+                open r3,r4              // try opening game slot
+                jp nz,rom_done          // no file cached — skip
+                close                   // close it, load_game will reopen
+                jp load_game
+rom_done:
                 exit 0
 
 // ============================================================================
 //  Game Loading (Slot 1) — detect type by extension
 // ============================================================================
 load_game:
-                // Reset core if already running
+                // Reset core if already running (for reload from interact menu)
                 bit r13,#bit_coreloaded
                 jp z,game_open
                 ld r0,#host_reset

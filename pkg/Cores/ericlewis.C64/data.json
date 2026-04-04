@@ -7,7 +7,7 @@
         "name": "System ROM",
         "required": true,
         "parameters": "0x2",
-        "filename": "c64_system.bin",
+        "filename": "c64_system.rom",
         "address": "0x10000000"
       },
       {
