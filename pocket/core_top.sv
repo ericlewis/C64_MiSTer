@@ -460,8 +460,9 @@ ascii_to_ps2 osk_ps2_conv (
 reg [7:0]  osk_inject_char;
 reg [2:0]  osk_inject_state = 0;
 reg [15:0] osk_inject_timer = 0;
-reg [10:0] osk_inject_key;
+reg [10:0] osk_inject_key = 0;
 reg        osk_inject_active = 0;
+reg        osk_toggle_bit = 0;
 
 localparam OSK_INJ_IDLE     = 0;
 localparam OSK_INJ_SHIFT_DN = 1;
@@ -494,53 +495,83 @@ wire osk_char_edge  = osk_char_valid_s1 & ~osk_char_valid_prev;
 wire osk_bs_edge    = osk_bs_s1 & ~osk_bs_prev;
 wire osk_enter_edge = osk_enter_s1 & ~osk_enter_prev;
 
+// Latch scancode and shift flag
+reg [7:0]  osk_latched_scancode;
+reg        osk_latched_shift;
+
 always @(posedge clk_sys) begin
     case (osk_inject_state)
     OSK_INJ_IDLE: begin
         osk_inject_active <= 0;
         if (osk_char_edge) begin
             osk_inject_char <= osk_char_s1;
-            osk_inject_state <= osk_needs_shift ? OSK_INJ_SHIFT_DN : OSK_INJ_KEY_DN;
             osk_inject_active <= 1;
             osk_inject_timer <= 0;
+            osk_inject_state <= 3'd6; // wait for ascii_to_ps2
         end else if (osk_bs_edge) begin
-            osk_inject_char <= 8'h08;
-            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_latched_scancode <= 8'h66;
+            osk_latched_shift <= 0;
             osk_inject_active <= 1;
             osk_inject_timer <= 0;
+            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_toggle_bit <= ~osk_toggle_bit;
+            osk_inject_key <= {~osk_toggle_bit, 1'b1, 1'b0, 8'h66};
         end else if (osk_enter_edge) begin
-            osk_inject_char <= 8'h0D;
-            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_latched_scancode <= 8'h5A;
+            osk_latched_shift <= 0;
             osk_inject_active <= 1;
             osk_inject_timer <= 0;
+            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_toggle_bit <= ~osk_toggle_bit;
+            osk_inject_key <= {~osk_toggle_bit, 1'b1, 1'b0, 8'h5A};
+        end
+    end
+    3'd6: begin // LATCH: ascii_to_ps2 output now valid
+        osk_latched_scancode <= osk_scancode;
+        osk_latched_shift <= osk_needs_shift;
+        if (osk_needs_shift) begin
+            osk_inject_state <= OSK_INJ_SHIFT_DN;
+            osk_toggle_bit <= ~osk_toggle_bit;
+            osk_inject_key <= {~osk_toggle_bit, 1'b1, 1'b0, 8'h12};
+        end else begin
+            osk_inject_state <= OSK_INJ_KEY_DN;
+            osk_toggle_bit <= ~osk_toggle_bit;
+            osk_inject_key <= {~osk_toggle_bit, 1'b1, 1'b0, osk_scancode};
         end
     end
     OSK_INJ_SHIFT_DN: begin
-        osk_inject_key <= {~osk_inject_key[10], 1'b1, 1'b0, 8'h12}; // Left Shift down
+        // Hold shift-down key signal, wait for C64 to process
         osk_inject_timer <= osk_inject_timer + 1'd1;
         if (osk_inject_timer == 16'h7FFF) begin
             osk_inject_state <= OSK_INJ_KEY_DN;
             osk_inject_timer <= 0;
+            osk_toggle_bit <= ~osk_toggle_bit;
+            osk_inject_key <= {~osk_toggle_bit, 1'b1, 1'b0, osk_latched_scancode};
         end
     end
     OSK_INJ_KEY_DN: begin
-        osk_inject_key <= {~osk_inject_key[10], 1'b1, 1'b0, osk_scancode};
         osk_inject_timer <= osk_inject_timer + 1'd1;
         if (osk_inject_timer == 16'h7FFF) begin
             osk_inject_state <= OSK_INJ_KEY_UP;
             osk_inject_timer <= 0;
+            osk_toggle_bit <= ~osk_toggle_bit;
+            osk_inject_key <= {~osk_toggle_bit, 1'b0, 1'b0, osk_latched_scancode};
         end
     end
     OSK_INJ_KEY_UP: begin
-        osk_inject_key <= {~osk_inject_key[10], 1'b0, 1'b0, osk_scancode};
         osk_inject_timer <= osk_inject_timer + 1'd1;
         if (osk_inject_timer == 16'h7FFF) begin
-            osk_inject_state <= osk_needs_shift ? OSK_INJ_SHIFT_UP : OSK_INJ_DONE;
+            if (osk_latched_shift) begin
+                osk_inject_state <= OSK_INJ_SHIFT_UP;
+                osk_toggle_bit <= ~osk_toggle_bit;
+                osk_inject_key <= {~osk_toggle_bit, 1'b0, 1'b0, 8'h12};
+            end else begin
+                osk_inject_state <= OSK_INJ_DONE;
+            end
             osk_inject_timer <= 0;
         end
     end
     OSK_INJ_SHIFT_UP: begin
-        osk_inject_key <= {~osk_inject_key[10], 1'b0, 1'b0, 8'h12};
         osk_inject_timer <= osk_inject_timer + 1'd1;
         if (osk_inject_timer == 16'h7FFF) begin
             osk_inject_state <= OSK_INJ_DONE;
