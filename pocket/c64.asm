@@ -196,7 +196,7 @@ do_disk:
                 exit 0
 
 // ============================================================================
-//  PRG/T64 Loading
+//  PRG/T64 Loading — use loadf for proper dataslot handshake
 // ============================================================================
 do_prg:
                 // Write file type = PRG
@@ -204,11 +204,14 @@ do_prg:
                 ld r2,#REG_FILE_TYPE
                 pmpw r2,r1
 
-                // Copy file data to bridge (data_loader captures)
-                ld r3,#ADDR_BRIDGE
-                copy r3,r4
-                jp nz,err_file
+                // Close the file opened by getext/open, loadf reopens it
                 close
+
+                // loadf triggers dataslot_requestwrite → proper ioctl_download
+                // Data goes to data.json address (0x10000000) → data_loader → ioctl
+                ld r0,#SLOT_GAME
+                loadf r0
+                jp nz,err_file
 
                 // Trigger load complete
                 ld r2,#REG_TRIGGER
@@ -221,7 +224,7 @@ do_prg:
                 exit 0
 
 // ============================================================================
-//  CRT Cartridge Loading
+//  CRT Cartridge Loading — use loadf for proper dataslot handshake
 // ============================================================================
 do_crt:
                 // Write file type = CRT
@@ -229,11 +232,13 @@ do_crt:
                 ld r2,#REG_FILE_TYPE
                 pmpw r2,r1
 
-                // Copy file data to bridge (data_loader captures)
-                ld r3,#ADDR_BRIDGE
-                copy r3,r4
-                jp nz,err_file
+                // Close the file opened by getext/open, loadf reopens it
                 close
+
+                // loadf triggers dataslot_requestwrite → proper ioctl_download
+                ld r0,#SLOT_GAME
+                loadf r0
+                jp nz,err_file
 
                 // Trigger load complete
                 ld r2,#REG_TRIGGER
