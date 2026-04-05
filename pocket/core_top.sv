@@ -1282,9 +1282,9 @@ reg        force_erase = 0;
 reg        erasing = 0;
 
 // Byte FIFO — buffers PRG/D64 data_loader output for io_cycle consumption
-(* ramstyle = "M10K, no_rw_check" *) reg [7:0] prg_fifo [0:65535];
-reg [15:0] prg_fifo_wr = 0;
-reg [15:0] prg_fifo_rd = 0;
+(* ramstyle = "M10K, no_rw_check" *) reg [7:0] prg_fifo [0:8191];
+reg [12:0] prg_fifo_wr = 0;
+reg [12:0] prg_fifo_rd = 0;
 reg  [7:0] prg_fifo_q = 0;
 reg  [2:0] dl_dma_wait = 0;
 reg        prg_finish_pending = 0;
@@ -1367,7 +1367,7 @@ always @(posedge clk_sys) begin
             if (ioctl_addr == 0) begin
                 ioctl_load_addr <= DISK_ADDR;
                 prg_fifo_rd <= 0;
-                prg_fifo_wr <= 16'd1;
+                prg_fifo_wr <= 13'd1;
                 prg_finish_pending <= 0;
                 inj_meminit <= 0;
                 prg_fifo[0] <= ioctl_data;
