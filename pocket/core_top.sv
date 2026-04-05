@@ -784,40 +784,32 @@ data_loader #(
 
 // Track download state (matches NES core pattern)
 reg        is_downloading = 0;
-reg  [7:0] active_slot_id_74a = SLOT_ROM;
-reg [31:0] active_slot_size_74a = 0;
 
 always @(posedge clk_74a) begin
-    if (dataslot_requestwrite) begin
-        is_downloading <= 1;
-        active_slot_id_74a <= dataslot_requestwrite_id[7:0];
-        active_slot_size_74a <= dataslot_requestwrite_size;
-    end
+    if (dataslot_requestwrite) is_downloading <= 1;
     else if (dataslot_allcomplete) is_downloading <= 0;
 end
 
 reg dl_s0 = 0, dl_s1 = 0;
-reg [7:0] active_slot_id_s0 = SLOT_ROM, active_slot_id_s1 = SLOT_ROM;
-reg [31:0] active_slot_size_s0 = 0, active_slot_size_s1 = 0;
+reg [3:0] active_slot_bank = 0;
 wire loader_busy;
 
 always @(posedge clk_sys) begin
     dl_s0 <= is_downloading;
     dl_s1 <= dl_s0;
-    active_slot_id_s0 <= active_slot_id_74a;
-    active_slot_id_s1 <= active_slot_id_s0;
-    active_slot_size_s0 <= active_slot_size_74a;
-    active_slot_size_s1 <= active_slot_size_s0;
 
     ioctl_download <= dl_s1;
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= dl_addr[24:0];
     ioctl_data     <= dl_data;
-    case (active_slot_id_s1)
-        SLOT_ROM:  ioctl_index <= 8'd8;
-        SLOT_PRG:  ioctl_index <= 8'h01;
-        SLOT_DISK: ioctl_index <= 8'h80;
-        SLOT_CRT:  ioctl_index <= 8'h41;
+    if (dl_wr && (dl_addr[23:0] == 24'd0)) begin
+        active_slot_bank <= dl_addr[27:24];
+    end
+    case (active_slot_bank)
+        4'h0:      ioctl_index <= 8'd8;
+        4'h1:      ioctl_index <= 8'h01;
+        4'h2:      ioctl_index <= 8'h80;
+        4'h3:      ioctl_index <= 8'h41;
         default:   ioctl_index <= 8'h00;
     endcase
 end

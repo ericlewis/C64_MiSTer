@@ -16,7 +16,7 @@
         "required": false,
         "parameters": "0x1",
         "extensions": ["prg", "t64"],
-        "address": "0x10000000"
+        "address": "0x11000000"
       },
       {
         "id": 2,
@@ -24,7 +24,7 @@
         "required": false,
         "parameters": "0x1",
         "extensions": ["d64", "g64", "d81"],
-        "address": "0x10000000"
+        "address": "0x12000000"
       },
       {
         "id": 3,
@@ -32,7 +32,7 @@
         "required": false,
         "parameters": "0x1",
         "extensions": ["crt"],
-        "address": "0x10000000"
+        "address": "0x13000000"
       }
     ]
   }
