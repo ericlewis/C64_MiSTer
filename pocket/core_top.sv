@@ -807,8 +807,7 @@ reg [31:0] dl_slot_size_s0 = 0, dl_slot_size_s1 = 0;
 reg        dl_active_prev = 0;
 reg  [7:0] dl_tail_hold = 0;
 wire loader_busy;
-wire [7:0] active_ioctl_index = dl_wr ? slot_to_ioctl_index({4'd0, dl_addr[27:24]})
-                                      : slot_to_ioctl_index(dl_slot_id_s1);
+wire [7:0] active_ioctl_index = slot_to_ioctl_index(dl_slot_id_s1);
 wire load_prg  = active_ioctl_index == 8'h01;
 wire load_crt  = active_ioctl_index == 8'h41;
 wire load_disk = active_ioctl_index == 8'h80;
@@ -828,8 +827,8 @@ always @(posedge clk_sys) begin
 
     ioctl_download <= dl_s1 || (dl_tail_hold != 0) || dl_wr;
     ioctl_wr       <= dl_wr;
-    // APF slots live at 0x1X000000. Strip the slot-select bits so each loader
-    // sees a byte stream starting at offset 0, matching MiSTer's ioctl path.
+    // The live slot id comes from dataslot_requestwrite_id; present slot-local
+    // byte offsets to the MiSTer-style loaders.
     ioctl_addr     <= {1'b0, dl_addr[23:0]};
     ioctl_data     <= dl_data;
     ioctl_index    <= active_ioctl_index;
