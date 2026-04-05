@@ -702,14 +702,14 @@ reg [19:0] reset_counter = 20'd200000;
 reg boot_erase_done = 0; // tracks if initial boot erase has completed
 
 always @(posedge clk_sys) begin
-    c64_reset_n <= (reset_counter == 0) & ~ioctl_download;
+    c64_reset_n <= (reset_counter == 0) & ~loader_busy;
 
     if (status[0]) begin
         // Manual reset — re-erase
         reset_counter <= 20'd200000;
         boot_erase_done <= 0;
     end
-    else if (ioctl_download) begin
+    else if (loader_busy) begin
         // Hold reset during loading but DON'T restart erase counter
         // PRG data is being written to RAM — don't erase it after
         if (!boot_erase_done)
@@ -757,7 +757,7 @@ wire [6:0] joy_b = status[3] ? joyA_c64 : joyB_c64;
 //  that isn't to the command (0xF8) or interact (0x00) space and route
 //  it through the ioctl interface.
 //
-//  Slot 1 = PRG/CRT (required, user selects at launch)
+//  Slot 1 = PRG/CRT/D64 (required, user selects at launch)
 // ========================================================================
 
 reg        ioctl_download = 0;
@@ -768,6 +768,7 @@ reg  [7:0] ioctl_index;
 
 wire load_prg = ioctl_index == 8'h01;
 wire load_crt = ioctl_index == 8'h41;
+wire load_disk = ioctl_index == 8'h80;
 wire load_rom = ioctl_index == 8'd8;
 
 // ============================================================
@@ -810,7 +811,6 @@ data_loader #(
 );
 
 // Track download state (matches NES core pattern)
-reg        prg_load_done = 0;
 reg        is_downloading = 0;
 
 always @(posedge clk_74a) begin
@@ -826,15 +826,15 @@ reg        chip32_dl_s0 = 0, chip32_dl_s1 = 0;
 
 // Sync to clk_sys
 reg dl_s0 = 0, dl_s1 = 0;
-reg combined_dl_prev = 0;
 wire combined_dl;
+wire loader_busy;
 
 always @(posedge clk_sys) begin
     // CDC: dataslot-based downloading (from LOADF)
     dl_s0 <= is_downloading;
     dl_s1 <= dl_s0;
 
-    // CDC: Chip32 downloading (from COPY — file_type write to trigger)
+    // CDC: Chip32 downloading (from file_type write to trigger)
     chip32_dl_s0 <= chip32_downloading_74a;
     chip32_dl_s1 <= chip32_dl_s0;
 
@@ -847,19 +847,12 @@ always @(posedge clk_sys) begin
     chip32_trig_s1 <= chip32_trig_s0;
     chip32_trig_prev <= chip32_trig_s1;
 
-    // Combined download: either LOADF (dataslot) or COPY (chip32)
-    combined_dl_prev <= combined_dl;
-
+    // Combined download: either LOADF (dataslot) or Chip32-managed transfer
     ioctl_download <= combined_dl;
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= dl_addr[24:0];
     ioctl_data     <= dl_data;
     ioctl_index    <= chip32_ft_s1; // dynamic: PRG/CRT/ROM from Chip32
-
-    // Detect falling edge of combined download = PRG load complete
-    // Only toggle for PRG files — ROM/CRT/D64 don't use the PRG fifo path
-    if (combined_dl_prev & ~combined_dl & (chip32_ft_s1 == 8'h01))
-        prg_load_done <= ~prg_load_done;
 end
 
 // ioctl_download is high when EITHER dataslot OR chip32 says we're downloading
@@ -1185,15 +1178,21 @@ always @(posedge clk_sys) begin
     end
 end
 
-// Disk image mount tracking — pulsed by Chip32 trigger when file_type == D64
+// Disk image mount tracking — pulse only after the buffered image stream has
+// fully drained into SDRAM.
 reg        img_mounted = 0;
+reg        img_mount_request = 0;
 reg [31:0] img_size = 0;
 
 always @(posedge clk_sys) begin
-    img_mounted <= 0; // single-cycle pulse
+    img_mounted <= 0; // single-cycle pulse once SDRAM is ready
     if (chip32_trigger_edge && chip32_ft_s1 == 8'h80) begin
-        img_mounted <= 1;
         img_size    <= chip32_fs_s1;
+        img_mount_request <= 1;
+    end
+    else if (img_mount_request && (prg_fifo_rd == prg_fifo_wr) && ~ioctl_download) begin
+        img_mounted <= 1;
+        img_mount_request <= 0;
     end
 end
 
@@ -1275,7 +1274,8 @@ end
 //  SDRAM io_cycle arbitration + file loading (from c64.sv lines 700-886)
 // ========================================================================
 
-localparam CRT_ADDR = 25'h0100000;
+localparam CRT_ADDR  = 25'h0100000;
+localparam DISK_ADDR = 25'h0400000;
 
 reg        io_cycle_ce;
 reg        io_cycle_we;
@@ -1286,14 +1286,16 @@ reg        ioctl_req_wr;
 reg        force_erase = 0;
 reg        erasing = 0;
 
-// PRG byte FIFO — buffers data_loader output for io_cycle consumption
-reg  [7:0] prg_fifo [0:255];
-reg  [7:0] prg_fifo_wr = 0;
-reg  [7:0] prg_fifo_rd = 0;
+// Byte FIFO — buffers PRG/D64 data_loader output for io_cycle consumption
+reg  [7:0] prg_fifo [0:1023];
+reg  [9:0] prg_fifo_wr = 0;
+reg  [9:0] prg_fifo_rd = 0;
+reg        prg_finish_pending = 0;
 reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
 reg [15:0] inj_end;
-reg        prg_done_prev = 0;
+
+assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit | (prg_fifo_rd != prg_fifo_wr);
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
@@ -1341,13 +1343,36 @@ always @(posedge clk_sys) begin
     // data_loader fires faster than io_cycle can consume
     if (ioctl_wr) begin
         if (load_prg) begin
-            if      (ioctl_addr == 0) begin ioctl_load_addr[7:0]  <= ioctl_data; inj_end[7:0]  <= ioctl_data; end
+            if      (ioctl_addr == 0) begin
+                prg_fifo_wr <= 0;
+                prg_fifo_rd <= 0;
+                prg_finish_pending <= 0;
+                inj_meminit <= 0;
+                ioctl_load_addr[7:0] <= ioctl_data;
+                inj_end[7:0] <= ioctl_data;
+            end
             else if (ioctl_addr == 1) begin ioctl_load_addr[15:8] <= ioctl_data; inj_end[15:8] <= ioctl_data; end
             else begin
                 // Buffer the byte into FIFO
                 prg_fifo[prg_fifo_wr] <= ioctl_data;
                 prg_fifo_wr <= prg_fifo_wr + 1'd1;
                 inj_end <= inj_end + 1'b1;
+            end
+        end
+
+        if (load_disk) begin
+            if (ioctl_addr == 0) begin
+                ioctl_load_addr <= DISK_ADDR;
+                prg_fifo_rd <= 0;
+                prg_fifo_wr <= 10'd1;
+                prg_finish_pending <= 0;
+                inj_meminit <= 0;
+                img_mount_request <= 0;
+                prg_fifo[0] <= ioctl_data;
+            end
+            else begin
+                prg_fifo[prg_fifo_wr] <= ioctl_data;
+                prg_fifo_wr <= prg_fifo_wr + 1'd1;
             end
         end
 
@@ -1397,10 +1422,17 @@ always @(posedge clk_sys) begin
         end
     end
 
-    // Cartridge attach/detach tracking
-    if (old_download != ioctl_download && load_crt) begin
-        cart_attached <= old_download;
-        erase_cram <= 1;
+    // Track load boundaries so buffered data is allowed to drain before any
+    // post-processing runs.
+    if (old_download != ioctl_download) begin
+        if (~ioctl_download && load_prg) begin
+            prg_finish_pending <= 1;
+        end
+
+        if (load_crt) begin
+            cart_attached <= old_download;
+            erase_cram <= 1;
+        end
     end
 
     old_st0 <= status[17];
@@ -1424,10 +1456,10 @@ always @(posedge clk_sys) begin
         end
     end
 
-    // BASIC pointer initialization after PRG load
-    // Detect prg_load_done toggle → start meminit
-    prg_done_prev <= prg_load_done;
-    if (prg_load_done != prg_done_prev && ~inj_meminit) begin
+    // BASIC pointer initialization after PRG load.
+    // Wait until the buffered stream has fully drained to SDRAM first.
+    if (prg_finish_pending && (prg_fifo_rd == prg_fifo_wr) && ~inj_meminit) begin
+        prg_finish_pending <= 0;
         inj_meminit <= 1;
         ioctl_load_addr <= 0;
     end

@@ -30,9 +30,8 @@ constant SLOT_GAME = 1
 constant core_id = 0
 
 // Host commands
-constant host_reset = 0x4000
-constant host_run   = 0x4001
-constant host_init  = 0x4002
+constant host_reset    = 0x4000
+constant host_continue = 0x4002
 
 // Bridge registers for Chip32 → FPGA communication
 constant REG_FILE_TYPE = 0x50100000
@@ -44,10 +43,6 @@ constant TYPE_PRG = 0x01
 constant TYPE_ROM = 0x08
 constant TYPE_CRT = 0x41
 constant TYPE_D64 = 0x80
-
-// Target addresses
-constant ADDR_BRIDGE = 0x10000000
-constant ADDR_DISK   = 0x00400000
 
 // Persistent state in r13
 variable bit_coreloaded = 0x1
@@ -92,15 +87,12 @@ rom_skip_core:
                 ld r1,#1
                 pmpw r2,r1
 
-                // First run: host_init. Subsequent: host_run
-                ld r0,#host_run
+                // Mark the core as initialized after the first ROM load
                 bit r13,#bit_coreloaded
-                jp nz,rom_run
-                ld r0,#host_init
+                jp nz,rom_check_game
                 or r13,#bit_coreloaded
-rom_run:
-                host r0,r0
 
+rom_check_game:
                 // After ROM load, also try to load game slot if file is cached
                 ld r3,#SLOT_GAME
                 open r3,r4              // try opening game slot
@@ -108,6 +100,8 @@ rom_run:
                 close                   // close it, load_game will reopen
                 jp load_game
 rom_done:
+                ld r0,#host_continue
+                host r0,r0
                 exit 0
 
 // ============================================================================
@@ -179,19 +173,21 @@ do_disk:
                 ld r2,#REG_FILE_SIZE
                 pmpw r2,r4
 
-                // Copy file data to SDRAM at disk base address
-                ld r3,#ADDR_DISK
-                copy r3,r4
-                jp nz,err_file
+                // Close the file opened by getext/open, loadf reopens it
                 close
 
-                // Trigger img_mounted pulse
+                // Load disk data through the standard dataslot bridge path
+                ld r0,#SLOT_GAME
+                loadf r0
+                jp nz,err_file
+
+                // Trigger img_mounted after the SDRAM writer drains the stream
                 ld r2,#REG_TRIGGER
                 ld r1,#1
                 pmpw r2,r1
 
-                // Resume core
-                ld r0,#host_run
+                // Let APF continue once the load has been processed
+                ld r0,#host_continue
                 host r0,r0
                 exit 0
 
@@ -218,8 +214,8 @@ do_prg:
                 ld r1,#1
                 pmpw r2,r1
 
-                // Resume core
-                ld r0,#host_run
+                // Let APF continue once the load has been processed
+                ld r0,#host_continue
                 host r0,r0
                 exit 0
 
@@ -245,8 +241,8 @@ do_crt:
                 ld r1,#1
                 pmpw r2,r1
 
-                // Resume core
-                ld r0,#host_run
+                // Let APF continue once the load has been processed
+                ld r0,#host_continue
                 host r0,r0
                 exit 0
 
