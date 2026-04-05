@@ -727,6 +727,18 @@ localparam [7:0] SLOT_PRG  = 8'd1;
 localparam [7:0] SLOT_DISK = 8'd2;
 localparam [7:0] SLOT_CRT  = 8'd3;
 
+function automatic [7:0] slot_to_ioctl_index(input [7:0] slot_id);
+begin
+    case (slot_id)
+        SLOT_ROM:  slot_to_ioctl_index = 8'd8;
+        SLOT_PRG:  slot_to_ioctl_index = 8'h01;
+        SLOT_DISK: slot_to_ioctl_index = 8'h80;
+        SLOT_CRT:  slot_to_ioctl_index = 8'h41;
+        default:   slot_to_ioctl_index = 8'h00;
+    endcase
+end
+endfunction
+
 reg        ioctl_download = 0;
 reg        ioctl_wr = 0;
 reg [24:0] ioctl_addr;
@@ -813,13 +825,7 @@ always @(posedge clk_sys) begin
     // sees a byte stream starting at offset 0, matching MiSTer's ioctl path.
     ioctl_addr     <= {1'b0, dl_addr[23:0]};
     ioctl_data     <= dl_data;
-    case (dl_slot_id_s1)
-        SLOT_ROM:  ioctl_index <= 8'd8;
-        SLOT_PRG:  ioctl_index <= 8'h01;
-        SLOT_DISK: ioctl_index <= 8'h80;
-        SLOT_CRT:  ioctl_index <= 8'h41;
-        default:   ioctl_index <= 8'h00;
-    endcase
+    ioctl_index    <= dl_wr ? slot_to_ioctl_index({4'd0, dl_addr[27:24]}) : slot_to_ioctl_index(dl_slot_id_s1);
 end
 
 // ========================================================================
@@ -978,7 +984,7 @@ fpga64_sid_iec fpga64 (
     // ROM loading — directly from ioctl signals
     .c64rom_addr(ioctl_addr[13:0]),
     .c64rom_data(ioctl_data),
-    .c64rom_wr  (load_rom && !ioctl_addr[16:14] && ioctl_download && ioctl_wr),
+    .c64rom_wr  (load_rom && !ioctl_addr[16:14] && ioctl_wr),
 
     .cass_write (),
     .cass_motor (),
@@ -1122,7 +1128,7 @@ iec_drive #(.PARPORT(1), .DUALROM(1), .DRIVES(1)) iec_drive_inst (
     .sd_buff_wr   (sd_buff_wr_0),
     .rom_addr     (load_rom ? (ioctl_addr[15:0] - 16'h4000) : ioctl_addr[14:0]),
     .rom_data     (ioctl_data),
-    .rom_wr       (load_rom && ioctl_addr[16:14] != 0 && ioctl_download && ioctl_wr),
+    .rom_wr       (load_rom && ioctl_addr[16:14] != 0 && ioctl_wr),
     .rom_std      (status[14])
 );
 
