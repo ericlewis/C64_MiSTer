@@ -428,6 +428,10 @@ wire [7:0]  osk_char;
 wire        osk_char_valid, osk_backspace, osk_enter;
 wire [23:0] c64_rgb = {vid_r, vid_g, vid_b};
 wire [23:0] osk_rgb_out;
+reg  [23:0] video_rgb_out = 24'd0;
+reg         video_de_out = 0;
+reg         video_vs_out = 0;
+reg         video_hs_out = 0;
 
 osk #(.H_ACTIVE(320), .V_ACTIVE(240)) osk_inst (
     .clk          (clk_vid),
@@ -585,10 +589,17 @@ always @(posedge clk_sys) begin
     endcase
 end
 
-assign video_rgb = (~vid_hb & ~vid_vb) ? osk_rgb_out : 24'd0;
-assign video_de  = ~vid_hb & ~vid_vb;
-assign video_vs  = vid_vs;
-assign video_hs  = vid_hs;
+always @(posedge clk_vid_90) begin
+    video_rgb_out <= (~vid_hb & ~vid_vb) ? osk_rgb_out : 24'd0;
+    video_de_out  <= ~vid_hb & ~vid_vb;
+    video_vs_out  <= vid_vs;
+    video_hs_out  <= vid_hs;
+end
+
+assign video_rgb = video_rgb_out;
+assign video_de  = video_de_out;
+assign video_vs  = video_vs_out;
+assign video_hs  = video_hs_out;
 
 // ========================================================================
 //  Audio Output — agg23 sound_i2s with proper CDC
@@ -1264,9 +1275,9 @@ reg        force_erase = 0;
 reg        erasing = 0;
 
 // Byte FIFO — buffers PRG/D64 data_loader output for io_cycle consumption
-(* ramstyle = "M10K, no_rw_check" *) reg [7:0] prg_fifo [0:1023];
-reg [9:0] prg_fifo_wr = 0;
-reg [9:0] prg_fifo_rd = 0;
+(* ramstyle = "M10K, no_rw_check" *) reg [7:0] prg_fifo [0:65535];
+reg [15:0] prg_fifo_wr = 0;
+reg [15:0] prg_fifo_rd = 0;
 reg  [7:0] prg_fifo_q = 0;
 reg        prg_finish_pending = 0;
 reg        inj_meminit = 0;
@@ -1343,7 +1354,7 @@ always @(posedge clk_sys) begin
             if (ioctl_addr == 0) begin
                 ioctl_load_addr <= DISK_ADDR;
                 prg_fifo_rd <= 0;
-                prg_fifo_wr <= 10'd1;
+                prg_fifo_wr <= 16'd1;
                 prg_finish_pending <= 0;
                 inj_meminit <= 0;
                 prg_fifo[0] <= ioctl_data;
