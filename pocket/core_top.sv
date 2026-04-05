@@ -624,6 +624,9 @@ sound_i2s #(
 
 assign dram_cke = 1;
 wire [7:0] sdram_data;
+reg        dl_dma_ce = 0;
+reg [24:0] dl_dma_addr = 0;
+reg  [7:0] dl_dma_data = 0;
 
 sdram sdram_inst (
     .sd_addr (dram_a),
@@ -638,22 +641,26 @@ sdram sdram_inst (
     .clk     (clk64),
     .init    (~pll_core_locked),
     .refresh (refresh),
-    .addr    (io_cycle ? (cart_mem_req ? cart_addr   :
-                          io_cycle_ce  ? io_cycle_addr :
-                          disk_ce_w    ? disk_addr_w   : cart_addr)
-                       :                                 cart_addr),
-    .ce      (io_cycle ? (cart_mem_req ? cart_ce     :
-                          io_cycle_ce  ? 1'b1        :
-                          disk_ce_w    ? 1'b1        : cart_ce)
-                       :                               cart_ce),
-    .we      (io_cycle ? (cart_mem_req ? cart_we     :
-                          io_cycle_ce  ? io_cycle_we :
-                          disk_ce_w    ? disk_we_w   : cart_we)
-                       :                               cart_we),
-    .din     (io_cycle ? (cart_mem_req ? cart_wrdata :
-                          io_cycle_ce  ? io_cycle_data :
-                          disk_ce_w    ? disk_dout_w : cart_wrdata)
-                       :                               cart_wrdata),
+    .addr    (dl_dma_ce ? dl_dma_addr :
+               io_cycle ? (cart_mem_req ? cart_addr   :
+                           io_cycle_ce  ? io_cycle_addr :
+                           disk_ce_w    ? disk_addr_w   : cart_addr)
+                        :                                 cart_addr),
+    .ce      (dl_dma_ce ? 1'b1 :
+               io_cycle ? (cart_mem_req ? cart_ce     :
+                           io_cycle_ce  ? 1'b1        :
+                           disk_ce_w    ? 1'b1        : cart_ce)
+                        :                               cart_ce),
+    .we      (dl_dma_ce ? 1'b1 :
+               io_cycle ? (cart_mem_req ? cart_we     :
+                           io_cycle_ce  ? io_cycle_we :
+                           disk_ce_w    ? disk_we_w   : cart_we)
+                        :                               cart_we),
+    .din     (dl_dma_ce ? dl_dma_data :
+               io_cycle ? (cart_mem_req ? cart_wrdata :
+                           io_cycle_ce  ? io_cycle_data :
+                           disk_ce_w    ? disk_dout_w : cart_wrdata)
+                        :                               cart_wrdata),
     .dout    (sdram_data)
 );
 
@@ -1279,6 +1286,7 @@ reg        erasing = 0;
 reg [15:0] prg_fifo_wr = 0;
 reg [15:0] prg_fifo_rd = 0;
 reg  [7:0] prg_fifo_q = 0;
+reg  [2:0] dl_dma_wait = 0;
 reg        prg_finish_pending = 0;
 reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
@@ -1298,6 +1306,19 @@ always @(posedge clk_sys) begin
     cart_hdr_wr  <= 0;
     start_strk   <= 0; // auto-clear each cycle, pulse only
     prg_fifo_q   <= prg_fifo[prg_fifo_rd];
+    dl_dma_ce    <= 0;
+
+    if (dl_dma_wait != 0) begin
+        dl_dma_wait <= dl_dma_wait - 1'd1;
+    end
+    else if (prg_fifo_rd != prg_fifo_wr) begin
+        dl_dma_ce   <= 1;
+        dl_dma_addr <= ioctl_load_addr;
+        dl_dma_data <= prg_fifo_q;
+        ioctl_load_addr <= ioctl_load_addr + 1'b1;
+        prg_fifo_rd <= prg_fifo_rd + 1'd1;
+        dl_dma_wait <= 3'd7;
+    end
 
     // On falling edge of io_cycle: perform one SDRAM write if pending
     if (~io_cycle & io_cycleD) begin
@@ -1316,14 +1337,6 @@ always @(posedge clk_sys) begin
                 io_cycle_data <= inj_meminit_data;
             else
                 io_cycle_data <= ioctl_data;
-        end
-        else if (prg_fifo_rd != prg_fifo_wr) begin
-            // PRG FIFO has data — write one byte to SDRAM
-            io_cycle_we   <= 1;
-            io_cycle_addr <= ioctl_load_addr;
-            io_cycle_data <= prg_fifo_q;
-            ioctl_load_addr <= ioctl_load_addr + 1'b1;
-            prg_fifo_rd <= prg_fifo_rd + 1'd1;
         end
     end
 
