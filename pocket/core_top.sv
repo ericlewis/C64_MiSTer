@@ -809,6 +809,8 @@ end
 reg dl_s0 = 0, dl_s1 = 0;
 reg [7:0]  dl_slot_id_s0 = SLOT_ROM, dl_slot_id_s1 = SLOT_ROM;
 reg [31:0] dl_slot_size_s0 = 0, dl_slot_size_s1 = 0;
+reg        dl_active_prev = 0;
+reg  [7:0] dl_tail_hold = 0;
 wire loader_busy;
 
 always @(posedge clk_sys) begin
@@ -818,8 +820,12 @@ always @(posedge clk_sys) begin
     dl_slot_id_s1 <= dl_slot_id_s0;
     dl_slot_size_s0 <= dl_slot_size_74a;
     dl_slot_size_s1 <= dl_slot_size_s0;
+    dl_active_prev <= dl_s1;
+    if (dl_s1) dl_tail_hold <= 8'd96;
+    else if (dl_active_prev) dl_tail_hold <= 8'd96;
+    else if (dl_tail_hold != 0) dl_tail_hold <= dl_tail_hold - 1'd1;
 
-    ioctl_download <= dl_s1;
+    ioctl_download <= dl_s1 || (dl_tail_hold != 0);
     ioctl_wr       <= dl_wr;
     // APF slots live at 0x1X000000. Strip the slot-select bits so each loader
     // sees a byte stream starting at offset 0, matching MiSTer's ioctl path.
