@@ -671,9 +671,9 @@ always @(posedge clk_sys) begin
         reset_counter <= 20'd200000;
         boot_erase_done <= 0;
     end
-    else if (loader_busy) begin
-        // Hold reset during loading but DON'T restart erase counter
-        // PRG data is being written to RAM — don't erase it after
+    else if (ioctl_download) begin
+        // Hold the startup counter only while APF is actively streaming bytes.
+        // Once the bridge transfer ends, let the core run so queued writes can drain.
         if (!boot_erase_done)
             reset_counter <= 20'd200000; // first boot, haven't erased yet
     end
@@ -737,11 +737,6 @@ wire load_prg = ioctl_index == 8'h01;
 wire load_crt = ioctl_index == 8'h41;
 wire load_disk = ioctl_index == 8'h80;
 wire load_rom = ioctl_index == 8'd8;
-
-localparam [7:0] SLOT_ROM  = 8'd0;
-localparam [7:0] SLOT_PRG  = 8'd1;
-localparam [7:0] SLOT_DISK = 8'd2;
-localparam [7:0] SLOT_CRT  = 8'd3;
 
 // ============================================================
 //  PRG Loading via data_loader (agg23 utility)
