@@ -259,8 +259,7 @@ reg  [31:0] target_dataslot_bridgeaddr;
 reg  [31:0] target_dataslot_length;
 wire [31:0] target_buffer_param_struct;
 wire [31:0] target_buffer_resp_struct;
-localparam [9:0] DISK_SIZE_DATATABLE_ADDR = 10'd5;
-wire  [9:0] datatable_addr = DISK_SIZE_DATATABLE_ADDR;
+wire  [9:0] datatable_addr = 10'd0;
 wire        datatable_wren = 1'b0;
 wire [31:0] datatable_data = 32'd0;
 wire [31:0] datatable_q;
@@ -743,6 +742,11 @@ wire load_crt = ioctl_index == 8'h41;
 wire load_disk = ioctl_index == 8'h80;
 wire load_rom = ioctl_index == 8'd8;
 
+localparam [7:0] SLOT_ROM  = 8'd0;
+localparam [7:0] SLOT_PRG  = 8'd1;
+localparam [7:0] SLOT_DISK = 8'd2;
+localparam [7:0] SLOT_CRT  = 8'd3;
+
 // ============================================================
 //  PRG Loading via data_loader (agg23 utility)
 //
@@ -783,34 +787,44 @@ data_loader #(
     .write_data(dl_data)
 );
 
-// Track download state (matches NES core pattern)
-reg        is_downloading = 0;
+// Track the active dataslot up front, before any bridge bytes arrive.
+reg        dl_downloading_74a = 0;
+reg [7:0]  dl_slot_id_74a = SLOT_ROM;
+reg [31:0] dl_slot_size_74a = 0;
 
 always @(posedge clk_74a) begin
-    if (dataslot_requestwrite) is_downloading <= 1;
-    else if (dataslot_allcomplete) is_downloading <= 0;
+    if (dataslot_requestwrite) begin
+        dl_downloading_74a <= 1;
+        dl_slot_id_74a <= dataslot_requestwrite_id[7:0];
+        dl_slot_size_74a <= dataslot_requestwrite_size;
+    end
+    else if (dataslot_allcomplete) begin
+        dl_downloading_74a <= 0;
+    end
 end
 
 reg dl_s0 = 0, dl_s1 = 0;
-reg [3:0] active_slot_bank = 0;
+reg [7:0]  dl_slot_id_s0 = SLOT_ROM, dl_slot_id_s1 = SLOT_ROM;
+reg [31:0] dl_slot_size_s0 = 0, dl_slot_size_s1 = 0;
 wire loader_busy;
 
 always @(posedge clk_sys) begin
-    dl_s0 <= is_downloading;
+    dl_s0 <= dl_downloading_74a;
     dl_s1 <= dl_s0;
+    dl_slot_id_s0 <= dl_slot_id_74a;
+    dl_slot_id_s1 <= dl_slot_id_s0;
+    dl_slot_size_s0 <= dl_slot_size_74a;
+    dl_slot_size_s1 <= dl_slot_size_s0;
 
     ioctl_download <= dl_s1;
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= dl_addr[24:0];
     ioctl_data     <= dl_data;
-    if (dl_wr && (dl_addr[23:0] == 24'd0)) begin
-        active_slot_bank <= dl_addr[27:24];
-    end
-    case (active_slot_bank)
-        4'h0:      ioctl_index <= 8'd8;
-        4'h1:      ioctl_index <= 8'h01;
-        4'h2:      ioctl_index <= 8'h80;
-        4'h3:      ioctl_index <= 8'h41;
+    case (dl_slot_id_s1)
+        SLOT_ROM:  ioctl_index <= 8'd8;
+        SLOT_PRG:  ioctl_index <= 8'h01;
+        SLOT_DISK: ioctl_index <= 8'h80;
+        SLOT_CRT:  ioctl_index <= 8'h41;
         default:   ioctl_index <= 8'h00;
     endcase
 end
@@ -1139,14 +1153,13 @@ reg        img_mounted = 0;
 reg        img_mount_request = 0;
 reg [31:0] img_size = 0;
 reg        prev_loader_download = 0;
-localparam [9:0] DISK_SIZE_DATATABLE_ADDR = 10'd5;
 
 always @(posedge clk_sys) begin
     img_mounted <= 0; // single-cycle pulse once SDRAM is ready
     prev_loader_download <= ioctl_download;
 
     if (prev_loader_download && ~ioctl_download && load_disk) begin
-        img_size    <= chip32_fs_s1;
+        img_size    <= dl_slot_size_s1;
         img_mount_request <= 1;
     end
     else if (img_mount_request && (prg_fifo_rd == prg_fifo_wr) && ~ioctl_download) begin
