@@ -189,12 +189,10 @@ assign vpll_feed = 1'bZ;
 
 wire [31:0] cmd_bridge_rd_data;
 wire [31:0] interact_bridge_rd_data;
-wire [31:0] chip32_bridge_rd_data;
 
 always @(*) begin
     casex (bridge_addr)
     32'h00xxxxxx: bridge_rd_data <= interact_bridge_rd_data;
-    32'h501xxxxx: bridge_rd_data <= chip32_bridge_rd_data;
     32'hF8xxxxxx: bridge_rd_data <= cmd_bridge_rd_data;
     default:      bridge_rd_data <= 32'd0;
     endcase
@@ -343,8 +341,6 @@ bridge_interact #(.NUM_REGS(16)) interact_bridge (
     .bridge_rd_data (interact_bridge_rd_data),
     .status         (status)
 );
-
-assign chip32_bridge_rd_data = 32'd0;
 
 // ========================================================================
 //  Clock Generation
@@ -668,7 +664,7 @@ reg [19:0] reset_counter = 20'd200000;
 reg boot_erase_done = 0; // tracks if initial boot erase has completed
 
 always @(posedge clk_sys) begin
-    c64_reset_n <= (reset_counter == 0) & ~loader_busy;
+    c64_reset_n <= (reset_counter == 0);
 
     if (status[0]) begin
         // Manual reset — re-erase
@@ -818,7 +814,9 @@ always @(posedge clk_sys) begin
 
     ioctl_download <= dl_s1;
     ioctl_wr       <= dl_wr;
-    ioctl_addr     <= dl_addr[24:0];
+    // APF slots live at 0x1X000000. Strip the slot-select bits so each loader
+    // sees a byte stream starting at offset 0, matching MiSTer's ioctl path.
+    ioctl_addr     <= {1'b0, dl_addr[23:0]};
     ioctl_data     <= dl_data;
     case (dl_slot_id_s1)
         SLOT_ROM:  ioctl_index <= 8'd8;
