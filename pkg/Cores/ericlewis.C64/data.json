@@ -12,10 +12,26 @@
       },
       {
         "id": 1,
-        "name": "Load Game",
+        "name": "Program",
         "required": false,
-        "parameters": "0x201",
-        "extensions": ["d64", "g64", "prg", "crt", "t64"],
+        "parameters": "0x1",
+        "extensions": ["prg", "t64"],
+        "address": "0x10000000"
+      },
+      {
+        "id": 2,
+        "name": "Disk",
+        "required": false,
+        "parameters": "0x1",
+        "extensions": ["d64", "g64", "d81"],
+        "address": "0x10000000"
+      },
+      {
+        "id": 3,
+        "name": "Cartridge",
+        "required": false,
+        "parameters": "0x1",
+        "extensions": ["crt"],
         "address": "0x10000000"
       }
     ]

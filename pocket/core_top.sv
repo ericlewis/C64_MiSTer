@@ -344,41 +344,7 @@ bridge_interact #(.NUM_REGS(16)) interact_bridge (
     .status         (status)
 );
 
-// ========================================================================
-//  Chip32 Communication Registers (clk_74a domain)
-//
-//  Chip32 VM writes these via pmpw to signal file type and load events.
-//  0x50100000 = file_type  (0x01=PRG, 0x08=ROM, 0x41=CRT, 0x80=D64)
-//  0x50100004 = file_size  (bytes, used for img_size on D64 mount)
-//  0x50100008 = trigger    (write toggles load-complete signal)
-// ========================================================================
-
-reg  [7:0] chip32_file_type_74a = 8'h01; // default PRG for backward compat
-reg [31:0] chip32_file_size_74a = 0;
-reg        chip32_trigger_toggle_74a = 0;
-reg        chip32_downloading_74a = 0;    // high between file_type write and trigger
-
-always @(posedge clk_74a) begin
-    if (bridge_wr && bridge_addr[31:20] == 12'h501) begin
-        case (bridge_addr[7:0])
-            8'h00: begin
-                chip32_file_type_74a    <= bridge_wr_data[7:0];
-                chip32_downloading_74a  <= 1;  // file_type write = start
-            end
-            8'h04: chip32_file_size_74a <= bridge_wr_data;
-            8'h08: begin
-                chip32_trigger_toggle_74a <= ~chip32_trigger_toggle_74a;
-                chip32_downloading_74a    <= 0;  // trigger = done
-            end
-        endcase
-    end
-end
-
-assign chip32_bridge_rd_data =
-    (bridge_addr[7:0] == 8'h00) ? {24'd0, chip32_file_type_74a} :
-    (bridge_addr[7:0] == 8'h04) ? chip32_file_size_74a :
-    (bridge_addr[7:0] == 8'h08) ? {31'd0, chip32_trigger_toggle_74a} :
-    32'd0;
+assign chip32_bridge_rd_data = 32'd0;
 
 // ========================================================================
 //  Clock Generation
@@ -757,8 +723,13 @@ wire [6:0] joy_b = status[3] ? joyA_c64 : joyB_c64;
 //  that isn't to the command (0xF8) or interact (0x00) space and route
 //  it through the ioctl interface.
 //
-//  Slot 1 = PRG/CRT/D64 (required, user selects at launch)
+//  Slot-based Pocket loading
 // ========================================================================
+
+localparam [7:0] SLOT_ROM  = 8'd0;
+localparam [7:0] SLOT_PRG  = 8'd1;
+localparam [7:0] SLOT_DISK = 8'd2;
+localparam [7:0] SLOT_CRT  = 8'd3;
 
 reg        ioctl_download = 0;
 reg        ioctl_wr = 0;
@@ -796,7 +767,8 @@ wire  [7:0] dl_data;
 data_loader #(
     .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx (matches data.json address)
     .ADDRESS_SIZE(28),
-    .WRITE_MEM_CLOCK_DELAY(4),    // fast — we buffer via ioctl_req_wr handshake
+    // Match the io_cycle SDRAM writer so large PRG/D64 loads don't overflow the FIFO.
+    .WRITE_MEM_CLOCK_DELAY(7),
     .OUTPUT_WORD_SIZE(1)
 ) data_loader_inst (
     .clk_74a(clk_74a),
@@ -812,53 +784,43 @@ data_loader #(
 
 // Track download state (matches NES core pattern)
 reg        is_downloading = 0;
+reg  [7:0] active_slot_id_74a = SLOT_ROM;
+reg [31:0] active_slot_size_74a = 0;
 
 always @(posedge clk_74a) begin
-    if (dataslot_requestwrite) is_downloading <= 1;
+    if (dataslot_requestwrite) begin
+        is_downloading <= 1;
+        active_slot_id_74a <= dataslot_requestwrite_id[7:0];
+        active_slot_size_74a <= dataslot_requestwrite_size;
+    end
     else if (dataslot_allcomplete) is_downloading <= 0;
 end
 
-// CDC: Chip32 registers (clk_74a → clk_sys)
-reg  [7:0] chip32_ft_s0 = 8'h01, chip32_ft_s1 = 8'h01;
-reg [31:0] chip32_fs_s0 = 0,     chip32_fs_s1 = 0;
-reg        chip32_trig_s0 = 0, chip32_trig_s1 = 0, chip32_trig_prev = 0;
-reg        chip32_dl_s0 = 0, chip32_dl_s1 = 0;
-
-// Sync to clk_sys
 reg dl_s0 = 0, dl_s1 = 0;
-wire combined_dl;
+reg [7:0] active_slot_id_s0 = SLOT_ROM, active_slot_id_s1 = SLOT_ROM;
+reg [31:0] active_slot_size_s0 = 0, active_slot_size_s1 = 0;
 wire loader_busy;
 
 always @(posedge clk_sys) begin
-    // CDC: dataslot-based downloading (from LOADF)
     dl_s0 <= is_downloading;
     dl_s1 <= dl_s0;
+    active_slot_id_s0 <= active_slot_id_74a;
+    active_slot_id_s1 <= active_slot_id_s0;
+    active_slot_size_s0 <= active_slot_size_74a;
+    active_slot_size_s1 <= active_slot_size_s0;
 
-    // CDC: Chip32 downloading (from file_type write to trigger)
-    chip32_dl_s0 <= chip32_downloading_74a;
-    chip32_dl_s1 <= chip32_dl_s0;
-
-    // CDC: Chip32 register values
-    chip32_ft_s0   <= chip32_file_type_74a;
-    chip32_ft_s1   <= chip32_ft_s0;
-    chip32_fs_s0   <= chip32_file_size_74a;
-    chip32_fs_s1   <= chip32_fs_s0;
-    chip32_trig_s0 <= chip32_trigger_toggle_74a;
-    chip32_trig_s1 <= chip32_trig_s0;
-    chip32_trig_prev <= chip32_trig_s1;
-
-    // Combined download: either LOADF (dataslot) or Chip32-managed transfer
-    ioctl_download <= combined_dl;
+    ioctl_download <= dl_s1;
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= dl_addr[24:0];
     ioctl_data     <= dl_data;
-    ioctl_index    <= chip32_ft_s1; // dynamic: PRG/CRT/ROM from Chip32
+    case (active_slot_id_s1)
+        SLOT_ROM:  ioctl_index <= 8'd8;
+        SLOT_PRG:  ioctl_index <= 8'h01;
+        SLOT_DISK: ioctl_index <= 8'h80;
+        SLOT_CRT:  ioctl_index <= 8'h41;
+        default:   ioctl_index <= 8'h00;
+    endcase
 end
-
-// ioctl_download is high when EITHER dataslot OR chip32 says we're downloading
-assign combined_dl = dl_s1 | chip32_dl_s1;
-
-wire chip32_trigger_edge = chip32_trig_s1 ^ chip32_trig_prev;
 
 // ========================================================================
 //  C64 Core
@@ -1183,11 +1145,14 @@ end
 reg        img_mounted = 0;
 reg        img_mount_request = 0;
 reg [31:0] img_size = 0;
+reg        prev_loader_download = 0;
 
 always @(posedge clk_sys) begin
     img_mounted <= 0; // single-cycle pulse once SDRAM is ready
-    if (chip32_trigger_edge && chip32_ft_s1 == 8'h80) begin
-        img_size    <= chip32_fs_s1;
+    prev_loader_download <= ioctl_download;
+
+    if (prev_loader_download && ~ioctl_download && load_disk) begin
+        img_size    <= active_slot_size_s1;
         img_mount_request <= 1;
     end
     else if (img_mount_request && (prg_fifo_rd == prg_fifo_wr) && ~ioctl_download) begin
@@ -1287,9 +1252,9 @@ reg        force_erase = 0;
 reg        erasing = 0;
 
 // Byte FIFO — buffers PRG/D64 data_loader output for io_cycle consumption
-reg  [7:0] prg_fifo [0:1023];
-reg  [9:0] prg_fifo_wr = 0;
-reg  [9:0] prg_fifo_rd = 0;
+reg  [7:0] prg_fifo [0:4095];
+reg [11:0] prg_fifo_wr = 0;
+reg [11:0] prg_fifo_rd = 0;
 reg        prg_finish_pending = 0;
 reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
@@ -1364,7 +1329,7 @@ always @(posedge clk_sys) begin
             if (ioctl_addr == 0) begin
                 ioctl_load_addr <= DISK_ADDR;
                 prg_fifo_rd <= 0;
-                prg_fifo_wr <= 10'd1;
+                prg_fifo_wr <= 12'd1;
                 prg_finish_pending <= 0;
                 inj_meminit <= 0;
                 prg_fifo[0] <= ioctl_data;

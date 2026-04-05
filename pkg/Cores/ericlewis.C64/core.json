@@ -13,7 +13,6 @@
     "framework": {
       "target_product": "Analogue Pocket",
       "version_required": "1.1",
-      "chip32_vm": "c64.bin",
       "sleep_supported": false,
       "dock": {
         "supported": true,

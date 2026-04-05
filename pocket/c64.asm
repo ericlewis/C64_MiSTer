@@ -30,8 +30,9 @@ constant SLOT_GAME = 1
 constant core_id = 0
 
 // Host commands
-constant host_reset    = 0x4000
-constant host_continue = 0x4002
+constant host_reset = 0x4000
+constant host_run   = 0x4001
+constant host_init  = 0x4002
 
 // Bridge registers for Chip32 → FPGA communication
 constant REG_FILE_TYPE = 0x50100000
@@ -46,6 +47,7 @@ constant TYPE_D64 = 0x80
 
 // Persistent state in r13
 variable bit_coreloaded = 0x1
+variable bit_booted     = 0x2
 
 // ============================================================================
 //  Error handler (must be at 0x0000)
@@ -87,7 +89,7 @@ rom_skip_core:
                 ld r1,#1
                 pmpw r2,r1
 
-                // Mark the core as initialized after the first ROM load
+                // Mark the bitstream as loaded
                 bit r13,#bit_coreloaded
                 jp nz,rom_check_game
                 or r13,#bit_coreloaded
@@ -96,20 +98,31 @@ rom_check_game:
                 // After ROM load, also try to load game slot if file is cached
                 ld r3,#SLOT_GAME
                 open r3,r4              // try opening game slot
-                jp nz,rom_done          // no file cached — skip
+                jp nz,rom_finish        // no file cached — finish boot
                 close                   // close it, load_game will reopen
                 jp load_game
-rom_done:
-                ld r0,#host_continue
+
+rom_finish:
+                // LOADF requires HOST 0x4002 to finalize the transfer.
+                // If the core was already running, also take it back out of reset.
+                ld r0,#host_init
                 host r0,r0
+                bit r13,#bit_booted
+                jp z,rom_boot_done
+                ld r0,#host_run
+                host r0,r0
+                exit 0
+
+rom_boot_done:
+                or r13,#bit_booted
                 exit 0
 
 // ============================================================================
 //  Game Loading (Slot 1) — detect type by extension
 // ============================================================================
 load_game:
-                // Reset core if already running (for reload from interact menu)
-                bit r13,#bit_coreloaded
+                // Reset core only if it has already completed initial boot.
+                bit r13,#bit_booted
                 jp z,game_open
                 ld r0,#host_reset
                 host r0,r0
@@ -186,9 +199,17 @@ do_disk:
                 ld r1,#1
                 pmpw r2,r1
 
-                // Let APF continue once the load has been processed
-                ld r0,#host_continue
+                // LOADF requires HOST 0x4002 to complete the transfer.
+                ld r0,#host_init
                 host r0,r0
+                bit r13,#bit_booted
+                jp z,disk_boot_done
+                ld r0,#host_run
+                host r0,r0
+                exit 0
+
+disk_boot_done:
+                or r13,#bit_booted
                 exit 0
 
 // ============================================================================
@@ -214,9 +235,17 @@ do_prg:
                 ld r1,#1
                 pmpw r2,r1
 
-                // Let APF continue once the load has been processed
-                ld r0,#host_continue
+                // LOADF requires HOST 0x4002 to complete the transfer.
+                ld r0,#host_init
                 host r0,r0
+                bit r13,#bit_booted
+                jp z,prg_boot_done
+                ld r0,#host_run
+                host r0,r0
+                exit 0
+
+prg_boot_done:
+                or r13,#bit_booted
                 exit 0
 
 // ============================================================================
@@ -241,9 +270,17 @@ do_crt:
                 ld r1,#1
                 pmpw r2,r1
 
-                // Let APF continue once the load has been processed
-                ld r0,#host_continue
+                // LOADF requires HOST 0x4002 to complete the transfer.
+                ld r0,#host_init
                 host r0,r0
+                bit r13,#bit_booted
+                jp z,crt_boot_done
+                ld r0,#host_run
+                host r0,r0
+                exit 0
+
+crt_boot_done:
+                or r13,#bit_booted
                 exit 0
 
 // ============================================================================
