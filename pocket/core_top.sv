@@ -259,9 +259,10 @@ reg  [31:0] target_dataslot_bridgeaddr;
 reg  [31:0] target_dataslot_length;
 wire [31:0] target_buffer_param_struct;
 wire [31:0] target_buffer_resp_struct;
-wire  [9:0] datatable_addr;
-wire        datatable_wren;
-wire [31:0] datatable_data;
+localparam [9:0] DISK_SIZE_DATATABLE_ADDR = 10'd5;
+wire  [9:0] datatable_addr = DISK_SIZE_DATATABLE_ADDR;
+wire        datatable_wren = 1'b0;
+wire [31:0] datatable_data = 32'd0;
 wire [31:0] datatable_q;
 
 core_bridge_cmd icb (
@@ -1138,13 +1139,14 @@ reg        img_mounted = 0;
 reg        img_mount_request = 0;
 reg [31:0] img_size = 0;
 reg        prev_loader_download = 0;
+localparam [9:0] DISK_SIZE_DATATABLE_ADDR = 10'd5;
 
 always @(posedge clk_sys) begin
     img_mounted <= 0; // single-cycle pulse once SDRAM is ready
     prev_loader_download <= ioctl_download;
 
     if (prev_loader_download && ~ioctl_download && load_disk) begin
-        img_size    <= active_slot_size_s1;
+        img_size    <= chip32_fs_s1;
         img_mount_request <= 1;
     end
     else if (img_mount_request && (prg_fifo_rd == prg_fifo_wr) && ~ioctl_download) begin
