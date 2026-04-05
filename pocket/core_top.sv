@@ -1367,7 +1367,6 @@ always @(posedge clk_sys) begin
                 prg_fifo_wr <= 10'd1;
                 prg_finish_pending <= 0;
                 inj_meminit <= 0;
-                img_mount_request <= 0;
                 prg_fifo[0] <= ioctl_data;
             end
             else begin
