@@ -41,25 +41,25 @@ begin
 end
 endfunction
 
-wire       dl_wr;
-wire [27:0] dl_addr;
-wire  [7:0] dl_data;
+reg         prev_bridge_wr = 0;
+reg         word_active_74a = 0;
+reg  [31:0] word_data_74a = 0;
+reg  [23:0] word_addr_74a = 0;
+reg   [1:0] word_idx_74a = 0;
+reg         dl_byte_wr_74a = 0;
+reg  [31:0] dl_byte_data_74a = 0;
+wire        dl_byte_stb_sys;
+wire [31:0] dl_byte_sys;
 
-data_loader #(
-    .ADDRESS_MASK_UPPER_4(4'h1),
-    .ADDRESS_SIZE(28),
-    .WRITE_MEM_CLOCK_DELAY(10),
-    .OUTPUT_WORD_SIZE(1)
-) data_loader_inst (
-    .clk_74a             (clk_74a),
-    .clk_memory          (clk_sys),
-    .bridge_wr           (bridge_wr),
-    .bridge_endian_little(bridge_endian_little),
-    .bridge_addr         (bridge_addr),
-    .bridge_wr_data      (bridge_wr_data),
-    .write_en            (dl_wr),
-    .write_addr          (dl_addr),
-    .write_data          (dl_data)
+sync_fifo #(
+    .WIDTH(32)
+) dl_byte_fifo (
+    .clk_write (clk_74a),
+    .clk_read  (clk_sys),
+    .write_en  (dl_byte_wr_74a),
+    .data      (dl_byte_data_74a),
+    .data_s    (dl_byte_sys),
+    .write_en_s(dl_byte_stb_sys)
 );
 
 reg        dl_downloading_74a = 0;
@@ -80,12 +80,44 @@ sync_fifo #(
 );
 
 always @(posedge clk_74a) begin
+    prev_bridge_wr <= bridge_wr;
+    dl_byte_wr_74a <= 0;
+
     if (dataslot_requestwrite) begin
         dl_downloading_74a <= 1;
         dl_start_74a <= ~dl_start_74a;
     end
     else if (dataslot_allcomplete) begin
         dl_downloading_74a <= 0;
+    end
+
+    // APF bridge file payload arrives as 32-bit words in the 0x1xxxxxxx range.
+    // Decompose each word into four ordered byte writes and push them across to
+    // clk_sys. APF leaves enough gap between words that a single in-flight word
+    // is sufficient here.
+    if (!word_active_74a && !prev_bridge_wr && bridge_wr && bridge_addr[31:28] == 4'h1) begin
+        word_active_74a <= 1;
+        word_data_74a   <= bridge_wr_data;
+        word_addr_74a   <= bridge_addr[23:0];
+        word_idx_74a    <= 0;
+    end
+    else if (word_active_74a) begin
+        dl_byte_wr_74a <= 1;
+        case (word_idx_74a)
+            2'd0: dl_byte_data_74a <= {word_addr_74a + 24'd0, bridge_endian_little ? word_data_74a[7:0]   : word_data_74a[31:24]};
+            2'd1: dl_byte_data_74a <= {word_addr_74a + 24'd1, bridge_endian_little ? word_data_74a[15:8]  : word_data_74a[23:16]};
+            2'd2: dl_byte_data_74a <= {word_addr_74a + 24'd2, bridge_endian_little ? word_data_74a[23:16] : word_data_74a[15:8]};
+            default:
+                  dl_byte_data_74a <= {word_addr_74a + 24'd3, bridge_endian_little ? word_data_74a[31:24] : word_data_74a[7:0]};
+        endcase
+
+        if (word_idx_74a == 2'd3) begin
+            word_active_74a <= 0;
+            word_idx_74a    <= 0;
+        end
+        else begin
+            word_idx_74a <= word_idx_74a + 1'd1;
+        end
     end
 end
 
@@ -94,7 +126,8 @@ reg        dl_stream_prev = 0;
 reg        ioctl_download_prev = 0;
 reg  [7:0] dl_tail_hold = 0;
 reg        dl_start_74a = 0, dl_start_s0 = 0, dl_start_s1 = 0, dl_start_prev = 0;
-wire       active_now = dl_s1 || dl_wr || (dl_tail_hold != 0);
+wire       dl_byte_in_range = ({8'd0, dl_byte_sys[31:8]} < current_slot_size);
+wire       active_now = dl_s1 || dl_byte_stb_sys || (dl_tail_hold != 0);
 wire [7:0] active_ioctl_index = slot_to_ioctl_index(current_slot_id);
 
 always @(posedge clk_sys) begin
@@ -115,14 +148,13 @@ always @(posedge clk_sys) begin
         slot_size <= slot_info_sys[31:0];
     end
 
-    if (dl_s1) dl_tail_hold <= 8'd96;
-    else if (dl_stream_prev) dl_tail_hold <= 8'd96;
+    if (dl_s1 || dl_stream_prev || dl_byte_stb_sys) dl_tail_hold <= 8'd96;
     else if (dl_tail_hold != 0) dl_tail_hold <= dl_tail_hold - 1'd1;
 
     ioctl_download <= active_now;
-    ioctl_wr       <= dl_wr;
-    ioctl_addr     <= {1'b0, dl_addr[23:0]};
-    ioctl_data     <= dl_data;
+    ioctl_wr       <= dl_byte_stb_sys && dl_byte_in_range;
+    ioctl_addr     <= {1'b0, dl_byte_sys[31:8]};
+    ioctl_data     <= dl_byte_sys[7:0];
     ioctl_index    <= active_ioctl_index;
 
     if (dl_start_s1 != dl_start_prev) load_start <= 1;

@@ -73,12 +73,13 @@ module sync_fifo #(
     read_req   <= 0;
     write_en_s <= 0;
 
-    if (~empty) begin
-      read_state <= READ_DELAY;
-      read_req   <= 1;
-    end
-
     case (read_state)
+      0: begin
+        if (~empty) begin
+          read_state <= READ_DELAY;
+          read_req   <= 1;
+        end
+      end
       READ_DELAY: begin
         read_state <= READ_WRITE;
       end
