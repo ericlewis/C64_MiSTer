@@ -420,7 +420,7 @@ always @(posedge clk_vid) begin
 end
 
 // OSK toggle: Select button
-wire osk_toggle = cont1_key[11];
+wire osk_toggle = cont1_key[12];
 
 // OSK instance
 wire        osk_active;

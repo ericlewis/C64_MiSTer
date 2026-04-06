@@ -86,6 +86,8 @@ reg        ioctl_download_prev = 0;
 reg  [7:0] dl_tail_hold = 0;
 reg        dl_start_74a = 0, dl_start_s0 = 0, dl_start_s1 = 0, dl_start_prev = 0;
 wire       active_now = dl_s1 || dl_wr || (dl_tail_hold != 0);
+wire [7:0] active_ioctl_index = dl_wr ? slot_to_ioctl_index({4'd0, dl_addr[27:24]})
+                                      : slot_to_ioctl_index(dl_slot_id_s1);
 
 always @(posedge clk_sys) begin
     load_start <= 0;
@@ -112,7 +114,7 @@ always @(posedge clk_sys) begin
     ioctl_wr       <= dl_wr;
     ioctl_addr     <= {1'b0, dl_addr[23:0]};
     ioctl_data     <= dl_data;
-    ioctl_index    <= slot_to_ioctl_index(dl_slot_id_s1);
+    ioctl_index    <= active_ioctl_index;
 
     if (dl_start_s1 != dl_start_prev) load_start <= 1;
     if (ioctl_download_prev && !active_now) load_done <= 1;
