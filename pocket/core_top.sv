@@ -419,8 +419,14 @@ always @(posedge clk_vid) begin
     if (vid_vb & ~prev_vid_vb) osk_v_cnt <= 0;
 end
 
-// OSK toggle: accept Select, Start, or L+R shoulders.
-wire osk_toggle = cont1_key[14] | cont1_key[15] | (cont1_key[8] & cont1_key[9]);
+// OSK toggle: Select button, synchronized into the video clock domain.
+wire osk_toggle_raw = cont1_key[14];
+reg osk_toggle_s0 = 0, osk_toggle_s1 = 0;
+always @(posedge clk_vid) begin
+    osk_toggle_s0 <= osk_toggle_raw;
+    osk_toggle_s1 <= osk_toggle_s0;
+end
+wire osk_toggle = osk_toggle_s1;
 
 // OSK instance
 wire        osk_active;
