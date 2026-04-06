@@ -622,92 +622,26 @@ wire [7:0] sdram_data;
 reg        dl_dma_push = 0;
 reg [24:0] dl_dma_addr_push = 0;
 reg  [7:0] dl_dma_data_push = 0;
-wire [32:0] dl_dma_fifo_data64;
-wire        dl_dma_ce64;
-wire        dl_dma_commit_sys;
-reg  [32:0] dl_dma_issue_data64 = 0;
-reg         dl_dma_issue64 = 0;
-reg   [2:0] dl_dma_busy64 = 0;
-reg   [2:0] dl_dma_wrptr64 = 0;
-reg   [2:0] dl_dma_rdptr64 = 0;
-reg   [3:0] dl_dma_count64 = 0;
-reg  [32:0] dl_dma_queue64 [0:7];
-reg  [18:0] dl_dma_pending_count = 0;
+wire        dl_dma_mem_ce64;
+wire        dl_dma_mem_we64;
+wire [24:0] dl_dma_mem_addr64;
+wire  [7:0] dl_dma_mem_data64;
 wire        dl_dma_drain_done;
 
-assign dl_dma_drain_done = (dl_dma_pending_count == 0);
-
-sync_fifo #(
-    .WIDTH(33)
-) dl_dma_fifo (
-    .clk_write (clk_sys),
-    .clk_read  (clk64),
-    .write_en  (dl_dma_push),
-    .data      ({dl_dma_addr_push, dl_dma_data_push}),
-    .data_s    (dl_dma_fifo_data64),
-    .write_en_s(dl_dma_ce64)
+pocket_sdram_write_queue dl_dma_queue (
+    .clk_sys      (clk_sys),
+    .clk_mem      (clk64),
+    .reset        (status[0]),
+    .push         (dl_dma_push),
+    .push_addr    (dl_dma_addr_push),
+    .push_data    (dl_dma_data_push),
+    .mem_ce       (dl_dma_mem_ce64),
+    .mem_we       (dl_dma_mem_we64),
+    .mem_addr     (dl_dma_mem_addr64),
+    .mem_data     (dl_dma_mem_data64),
+    .pending_count(),
+    .drain_done   (dl_dma_drain_done)
 );
-
-sync_fifo #(
-    .WIDTH(1)
-) dl_dma_commit_fifo (
-    .clk_write (clk64),
-    .clk_read  (clk_sys),
-    .write_en  (dl_dma_issue64),
-    .data      (1'b1),
-    .data_s    (),
-    .write_en_s(dl_dma_commit_sys)
-);
-
-wire dl_dma_push_event = prg_payload_wr || (ioctl_wr && load_disk);
-
-always @(posedge clk_sys) begin
-    if (status[0]) begin
-        dl_dma_pending_count <= 0;
-    end
-    else begin
-        case ({dl_dma_push_event, dl_dma_commit_sys})
-            2'b10: dl_dma_pending_count <= dl_dma_pending_count + 1'd1;
-            2'b01: if (dl_dma_pending_count != 0) dl_dma_pending_count <= dl_dma_pending_count - 1'd1;
-            default: dl_dma_pending_count <= dl_dma_pending_count;
-        endcase
-    end
-end
-
-always @(posedge clk64) begin
-    integer next_count;
-    integer next_wrptr;
-    integer next_rdptr;
-
-    dl_dma_issue64 <= 0;
-
-    next_count = dl_dma_count64;
-    next_wrptr = dl_dma_wrptr64;
-    next_rdptr = dl_dma_rdptr64;
-
-    if (dl_dma_ce64) begin
-        if (dl_dma_count64 != 8) begin
-            dl_dma_queue64[dl_dma_wrptr64] <= dl_dma_fifo_data64;
-            next_wrptr = (dl_dma_wrptr64 == 3'd7) ? 0 : dl_dma_wrptr64 + 1'd1;
-            next_count = next_count + 1;
-        end
-    end
-
-    if (dl_dma_busy64 != 0)
-        dl_dma_busy64 <= dl_dma_busy64 - 1'd1;
-
-    if ((dl_dma_busy64 == 0) && (next_count != 0)) begin
-        dl_dma_issue64 <= 1;
-        dl_dma_issue_data64 <= dl_dma_queue64[next_rdptr[2:0]];
-        next_rdptr = (next_rdptr == 7) ? 0 : next_rdptr + 1;
-        next_count = next_count - 1;
-        dl_dma_busy64 <= 3'd7;
-    end
-
-    dl_dma_count64 <= next_count[3:0];
-    dl_dma_wrptr64 <= next_wrptr[2:0];
-    dl_dma_rdptr64 <= next_rdptr[2:0];
-end
 
 sdram sdram_inst (
     .sd_addr (dram_a),
@@ -722,22 +656,22 @@ sdram sdram_inst (
     .clk     (clk64),
     .init    (~pll_core_locked),
     .refresh (refresh),
-    .addr    (dl_dma_issue64 ? dl_dma_issue_data64[32:8] :
+    .addr    (dl_dma_mem_ce64 ? dl_dma_mem_addr64 :
                io_cycle ? (cart_mem_req ? cart_addr   :
                            io_cycle_ce  ? io_cycle_addr :
                            disk_ce_w    ? disk_addr_w   : cart_addr)
                         :                                 cart_addr),
-    .ce      (dl_dma_issue64 ? 1'b1 :
+    .ce      (dl_dma_mem_ce64 ? 1'b1 :
                io_cycle ? (cart_mem_req ? cart_ce     :
                            io_cycle_ce  ? 1'b1        :
                            disk_ce_w    ? 1'b1        : cart_ce)
                         :                               cart_ce),
-    .we      (dl_dma_issue64 ? 1'b1 :
+    .we      (dl_dma_mem_ce64 ? dl_dma_mem_we64 :
                io_cycle ? (cart_mem_req ? cart_we     :
                            io_cycle_ce  ? io_cycle_we :
                            disk_ce_w    ? disk_we_w   : cart_we)
                         :                               cart_we),
-    .din     (dl_dma_issue64 ? dl_dma_issue_data64[7:0] :
+    .din     (dl_dma_mem_ce64 ? dl_dma_mem_data64 :
                io_cycle ? (cart_mem_req ? cart_wrdata :
                            io_cycle_ce  ? io_cycle_data :
                            disk_ce_w    ? disk_dout_w : cart_wrdata)
