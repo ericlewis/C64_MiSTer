@@ -624,6 +624,11 @@ reg [24:0] dl_dma_addr_push = 0;
 reg  [7:0] dl_dma_data_push = 0;
 wire [32:0] dl_dma_fifo_data64;
 wire        dl_dma_ce64;
+wire        dl_dma_commit_sys;
+reg  [18:0] dl_dma_pending_count = 0;
+wire        dl_dma_drain_done;
+
+assign dl_dma_drain_done = (dl_dma_pending_count == 0);
 
 sync_fifo #(
     .WIDTH(33)
@@ -635,6 +640,32 @@ sync_fifo #(
     .data_s    (dl_dma_fifo_data64),
     .write_en_s(dl_dma_ce64)
 );
+
+sync_fifo #(
+    .WIDTH(1)
+) dl_dma_commit_fifo (
+    .clk_write (clk64),
+    .clk_read  (clk_sys),
+    .write_en  (dl_dma_ce64),
+    .data      (1'b1),
+    .data_s    (),
+    .write_en_s(dl_dma_commit_sys)
+);
+
+wire dl_dma_push_event = prg_payload_wr || (ioctl_wr && load_disk);
+
+always @(posedge clk_sys) begin
+    if (status[0]) begin
+        dl_dma_pending_count <= 0;
+    end
+    else begin
+        case ({dl_dma_push_event, dl_dma_commit_sys})
+            2'b10: dl_dma_pending_count <= dl_dma_pending_count + 1'd1;
+            2'b01: if (dl_dma_pending_count != 0) dl_dma_pending_count <= dl_dma_pending_count - 1'd1;
+            default: dl_dma_pending_count <= dl_dma_pending_count;
+        endcase
+    end
+end
 
 sdram sdram_inst (
     .sd_addr (dram_a),
@@ -1142,7 +1173,7 @@ always @(posedge clk_sys) begin
         img_size    <= loader_slot_size;
         img_mount_request <= 1;
     end
-    else if (img_mount_request && ~ioctl_download && (dl_write_tail_hold == 0)) begin
+    else if (img_mount_request && ~ioctl_download && dl_dma_drain_done) begin
         img_mounted <= 1;
         img_mount_request <= 0;
     end
@@ -1240,10 +1271,9 @@ reg [24:0] prg_meminit_pending_addr = 0;
 reg  [7:0] prg_meminit_pending_data = 0;
 reg        force_erase = 0;
 reg        erasing = 0;
-reg  [7:0] dl_write_tail_hold = 0;
 wire       loader_busy;
 
-assign loader_busy = ioctl_download | img_mount_request | prg_busy | (dl_write_tail_hold != 0);
+assign loader_busy = ioctl_download | img_mount_request | prg_busy | ~dl_dma_drain_done;
 
 prg_load_ctrl prg_loader_ctrl (
     .clk             (clk_sys),
@@ -1253,7 +1283,7 @@ prg_load_ctrl prg_loader_ctrl (
     .ioctl_data      (ioctl_data),
     .load_done       (loader_load_done && load_prg),
     .ioctl_download  (ioctl_download),
-    .write_drain_done(dl_write_tail_hold == 0),
+    .write_drain_done(dl_dma_drain_done),
     .mem_write_busy  (ioctl_req_wr || prg_meminit_pending || erasing),
     .payload_wr      (prg_payload_wr),
     .payload_addr    (prg_payload_addr),
@@ -1275,7 +1305,6 @@ always @(posedge clk_sys) begin
     io_cycleD    <= io_cycle;
     cart_hdr_wr  <= 0;
     dl_dma_push  <= 0;
-    if (dl_write_tail_hold != 0) dl_write_tail_hold <= dl_write_tail_hold - 1'd1;
 
     // On falling edge of io_cycle: perform one SDRAM write if pending
     if (~io_cycle & io_cycleD) begin
@@ -1307,7 +1336,6 @@ always @(posedge clk_sys) begin
         dl_dma_push <= 1;
         dl_dma_addr_push <= prg_payload_addr;
         dl_dma_data_push <= prg_payload_data;
-        dl_write_tail_hold <= 8'd64;
     end
 
     if (prg_meminit_wr) begin
@@ -1326,14 +1354,12 @@ always @(posedge clk_sys) begin
                 dl_dma_addr_push <= DISK_ADDR;
                 dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= DISK_ADDR + 1'd1;
-                dl_write_tail_hold <= 8'd64;
             end
             else begin
                 dl_dma_push <= 1;
                 dl_dma_addr_push <= ioctl_load_addr;
                 dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= ioctl_load_addr + 1'b1;
-                dl_write_tail_hold <= 8'd64;
             end
         end
 
