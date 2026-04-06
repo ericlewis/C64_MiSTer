@@ -403,11 +403,13 @@ always @(posedge clk_vid) osk_font_data <= osk_font_rom[osk_font_addr];
 
 // Pixel counters in clk_vid domain — count only within active (DE) area
 wire vid_de_raw = ~vid_hb & ~vid_vb;
+reg  vid_crop_bottom = 0;
 reg [9:0] osk_h_cnt = 0, osk_v_cnt = 0;
 reg       prev_de, prev_vid_vb;
 always @(posedge clk_vid) begin
     prev_de <= vid_de_raw;
     prev_vid_vb <= vid_vb;
+    vid_crop_bottom <= ~ntsc && (osk_v_cnt == 10'd270);
     if (vid_de_raw)
         osk_h_cnt <= osk_h_cnt + 1'd1;
     // Rising edge of DE = start of new active line
@@ -590,8 +592,8 @@ always @(posedge clk_sys) begin
 end
 
 always @(posedge clk_vid_90) begin
-    video_rgb_out <= (~vid_hb & ~vid_vb) ? osk_rgb_out : 24'd0;
-    video_de_out  <= ~vid_hb & ~vid_vb;
+    video_rgb_out <= ((~vid_hb & ~vid_vb) && ~vid_crop_bottom) ? osk_rgb_out : 24'd0;
+    video_de_out  <= (~vid_hb & ~vid_vb) && ~vid_crop_bottom;
     video_vs_out  <= vid_vs;
     video_hs_out  <= vid_hs;
 end
@@ -624,9 +626,22 @@ sound_i2s #(
 
 assign dram_cke = 1;
 wire [7:0] sdram_data;
-reg        dl_dma_ce = 0;
-reg [24:0] dl_dma_addr = 0;
-reg  [7:0] dl_dma_data = 0;
+reg        dl_dma_push = 0;
+reg [24:0] dl_dma_addr_push = 0;
+reg  [7:0] dl_dma_data_push = 0;
+wire [32:0] dl_dma_fifo_data64;
+wire        dl_dma_ce64;
+
+sync_fifo #(
+    .WIDTH(33)
+) dl_dma_fifo (
+    .clk_write (clk_sys),
+    .clk_read  (clk64),
+    .write_en  (dl_dma_push),
+    .data      ({dl_dma_addr_push, dl_dma_data_push}),
+    .data_s    (dl_dma_fifo_data64),
+    .write_en_s(dl_dma_ce64)
+);
 
 sdram sdram_inst (
     .sd_addr (dram_a),
@@ -641,22 +656,22 @@ sdram sdram_inst (
     .clk     (clk64),
     .init    (~pll_core_locked),
     .refresh (refresh),
-    .addr    (dl_dma_ce ? dl_dma_addr :
+    .addr    (dl_dma_ce64 ? dl_dma_fifo_data64[32:8] :
                io_cycle ? (cart_mem_req ? cart_addr   :
                            io_cycle_ce  ? io_cycle_addr :
                            disk_ce_w    ? disk_addr_w   : cart_addr)
                         :                                 cart_addr),
-    .ce      (dl_dma_ce ? 1'b1 :
+    .ce      (dl_dma_ce64 ? 1'b1 :
                io_cycle ? (cart_mem_req ? cart_ce     :
                            io_cycle_ce  ? 1'b1        :
                            disk_ce_w    ? 1'b1        : cart_ce)
                         :                               cart_ce),
-    .we      (dl_dma_ce ? 1'b1 :
+    .we      (dl_dma_ce64 ? 1'b1 :
                io_cycle ? (cart_mem_req ? cart_we     :
                            io_cycle_ce  ? io_cycle_we :
                            disk_ce_w    ? disk_we_w   : cart_we)
                         :                               cart_we),
-    .din     (dl_dma_ce ? dl_dma_data :
+    .din     (dl_dma_ce64 ? dl_dma_fifo_data64[7:0] :
                io_cycle ? (cart_mem_req ? cart_wrdata :
                            io_cycle_ce  ? io_cycle_data :
                            disk_ce_w    ? disk_dout_w : cart_wrdata)
@@ -680,16 +695,29 @@ reg        c64_reset_n = 0;
 reg [19:0] reset_counter = 20'd200000;
 
 reg boot_erase_done = 0; // tracks if initial boot erase has completed
+reg reset_wait = 0;
+reg old_download_reset = 0;
 
 always @(posedge clk_sys) begin
     c64_reset_n <= (reset_counter == 0);
+    old_download_reset <= ioctl_download;
 
     if (status[0]) begin
         // Manual reset — re-erase
         reset_counter <= 20'd200000;
         boot_erase_done <= 0;
+        reset_wait <= 0;
     end
-    else if (ioctl_download) begin
+    else if (~old_download_reset && ioctl_download && load_prg) begin
+        // Match MiSTer's reset-and-run PRG behavior: briefly reset the C64
+        // so BASIC restarts cleanly before meminit and auto-RUN.
+        reset_wait <= 1;
+        reset_counter <= 20'd255;
+    end
+    else if (ioctl_download && (load_crt || load_rom)) begin
+        reset_counter <= 20'd255;
+    end
+    else if ((ioctl_download || inj_meminit) && !reset_wait) begin
         // Hold the startup counter only while APF is actively streaming bytes.
         // Once the bridge transfer ends, let the core run so queued writes can drain.
         if (!boot_erase_done)
@@ -705,8 +733,10 @@ always @(posedge clk_sys) begin
             boot_erase_done <= 1;
         end
     end
-    else
+    else begin
         force_erase <= 0;
+        if (reset_wait && c64_addr == 16'hFFCF) reset_wait <= 0;
+    end
 end
 
 // ========================================================================
@@ -1185,7 +1215,7 @@ always @(posedge clk_sys) begin
         img_size    <= dl_slot_size_s1;
         img_mount_request <= 1;
     end
-    else if (img_mount_request && ~ioctl_download && !dl_dma_ce) begin
+    else if (img_mount_request && ~ioctl_download) begin
         img_mounted <= 1;
         img_mount_request <= 0;
     end
@@ -1286,7 +1316,7 @@ reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
 reg [15:0] inj_end;
 
-assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit | dl_dma_ce;
+assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit;
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
@@ -1299,7 +1329,7 @@ always @(posedge clk_sys) begin
     io_cycleD    <= io_cycle;
     cart_hdr_wr  <= 0;
     start_strk   <= 0; // auto-clear each cycle, pulse only
-    dl_dma_ce    <= 0;
+    dl_dma_push  <= 0;
 
     // On falling edge of io_cycle: perform one SDRAM write if pending
     if (~io_cycle & io_cycleD) begin
@@ -1335,9 +1365,9 @@ always @(posedge clk_sys) begin
             end
             else if (ioctl_addr == 1) begin ioctl_load_addr[15:8] <= ioctl_data; inj_end[15:8] <= ioctl_data; end
             else begin
-                dl_dma_ce   <= 1;
-                dl_dma_addr <= ioctl_load_addr;
-                dl_dma_data <= ioctl_data;
+                dl_dma_push <= 1;
+                dl_dma_addr_push <= ioctl_load_addr;
+                dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= ioctl_load_addr + 1'b1;
                 inj_end <= inj_end + 1'b1;
             end
@@ -1348,15 +1378,15 @@ always @(posedge clk_sys) begin
                 ioctl_load_addr <= DISK_ADDR;
                 prg_finish_pending <= 0;
                 inj_meminit <= 0;
-                dl_dma_ce   <= 1;
-                dl_dma_addr <= DISK_ADDR;
-                dl_dma_data <= ioctl_data;
+                dl_dma_push <= 1;
+                dl_dma_addr_push <= DISK_ADDR;
+                dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= DISK_ADDR + 1'd1;
             end
             else begin
-                dl_dma_ce   <= 1;
-                dl_dma_addr <= ioctl_load_addr;
-                dl_dma_data <= ioctl_data;
+                dl_dma_push <= 1;
+                dl_dma_addr_push <= ioctl_load_addr;
+                dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= ioctl_load_addr + 1'b1;
             end
         end
@@ -1443,7 +1473,7 @@ always @(posedge clk_sys) begin
 
     // BASIC pointer initialization after PRG load.
     // Wait until the buffered stream has fully drained to SDRAM first.
-    if (prg_finish_pending && ~ioctl_download && ~dl_dma_ce && ~inj_meminit) begin
+    if (prg_finish_pending && ~ioctl_download && ~inj_meminit) begin
         prg_finish_pending <= 0;
         inj_meminit <= 1;
         ioctl_load_addr <= 0;
