@@ -27,8 +27,10 @@ module pocket_sdram_write_queue #(
 wire [ADDR_WIDTH+7:0] fifo_data_mem;
 wire                  fifo_stb_mem;
 wire                  commit_stb_sys;
+reg                   commit_pulse_mem = 0;
 
 reg  [2:0]           issue_busy_mem = 0;
+reg                  issue_inflight_mem = 0;
 reg  [LOCAL_AW-1:0]  wrptr_mem = 0;
 reg  [LOCAL_AW-1:0]  rdptr_mem = 0;
 reg  [LOCAL_AW:0]    count_mem = 0;
@@ -52,7 +54,7 @@ sync_fifo #(
 ) commit_fifo (
     .clk_write (clk_mem),
     .clk_read  (clk_sys),
-    .write_en  (mem_ce),
+    .write_en  (commit_pulse_mem),
     .data      (1'b1),
     .data_s    (),
     .write_en_s(commit_stb_sys)
@@ -79,6 +81,7 @@ always @(posedge clk_mem) begin
 
     mem_ce <= 0;
     mem_we <= 0;
+    commit_pulse_mem <= 0;
 
     next_count = count_mem;
     next_wrptr = wrptr_mem;
@@ -95,11 +98,17 @@ always @(posedge clk_mem) begin
     if (issue_busy_mem != 0)
         issue_busy_mem <= issue_busy_mem - 1'd1;
 
+    if (issue_inflight_mem && (issue_busy_mem == 3'd1)) begin
+        issue_inflight_mem <= 0;
+        commit_pulse_mem <= 1;
+    end
+
     if ((issue_busy_mem == 0) && (count_mem != 0)) begin
         issue_word = queue_mem[rdptr_mem];
         next_rdptr = (rdptr_mem == LOCAL_DEPTH-1) ? 0 : rdptr_mem + 1;
         next_count = next_count - 1;
         issue_busy_mem <= ISSUE_GAP_CYCLES[2:0];
+        issue_inflight_mem <= 1;
 
         mem_ce <= 1;
         mem_we <= 1;
