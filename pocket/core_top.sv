@@ -710,9 +710,10 @@ always @(posedge clk_sys) begin
     else if (ioctl_download && (load_crt || load_rom)) begin
         reset_counter <= 20'd255;
     end
-    else if ((ioctl_download || prg_busy) && !reset_wait) begin
-        // Hold the startup counter only while APF is actively streaming bytes.
-        // Once the bridge transfer ends, let the core run so queued writes can drain.
+    else if (ioctl_download && !reset_wait) begin
+        // Match MiSTer's behavior more closely: only the active host download
+        // can stall the startup counter. Post-load PRG finalize/meminit should
+        // not extend reset hold time.
         if (!boot_erase_done)
             reset_counter <= 20'd200000; // first boot, haven't erased yet
     end
