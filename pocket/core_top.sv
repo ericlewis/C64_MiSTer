@@ -789,7 +789,7 @@ data_loader #(
     .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx (matches data.json address)
     .ADDRESS_SIZE(28),
     // Match the io_cycle SDRAM writer so large PRG/D64 loads don't overflow the FIFO.
-    .WRITE_MEM_CLOCK_DELAY(7),
+    .WRITE_MEM_CLOCK_DELAY(10),
     .OUTPUT_WORD_SIZE(1)
 ) data_loader_inst (
     .clk_74a(clk_74a),
@@ -1185,7 +1185,7 @@ always @(posedge clk_sys) begin
         img_size    <= dl_slot_size_s1;
         img_mount_request <= 1;
     end
-    else if (img_mount_request && (prg_fifo_rd == prg_fifo_wr) && ~ioctl_download) begin
+    else if (img_mount_request && ~ioctl_download && !dl_dma_ce) begin
         img_mounted <= 1;
         img_mount_request <= 0;
     end
@@ -1281,18 +1281,12 @@ reg        ioctl_req_wr;
 reg        force_erase = 0;
 reg        erasing = 0;
 
-// Byte FIFO — buffers PRG/D64 data_loader output for io_cycle consumption
-(* ramstyle = "M10K, no_rw_check" *) reg [7:0] prg_fifo [0:8191];
-reg [12:0] prg_fifo_wr = 0;
-reg [12:0] prg_fifo_rd = 0;
-reg  [7:0] prg_fifo_q = 0;
-reg  [2:0] dl_dma_wait = 0;
 reg        prg_finish_pending = 0;
 reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
 reg [15:0] inj_end;
 
-assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit | (prg_fifo_rd != prg_fifo_wr);
+assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit | dl_dma_ce;
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
@@ -1305,20 +1299,7 @@ always @(posedge clk_sys) begin
     io_cycleD    <= io_cycle;
     cart_hdr_wr  <= 0;
     start_strk   <= 0; // auto-clear each cycle, pulse only
-    prg_fifo_q   <= prg_fifo[prg_fifo_rd];
     dl_dma_ce    <= 0;
-
-    if (dl_dma_wait != 0) begin
-        dl_dma_wait <= dl_dma_wait - 1'd1;
-    end
-    else if (prg_fifo_rd != prg_fifo_wr) begin
-        dl_dma_ce   <= 1;
-        dl_dma_addr <= ioctl_load_addr;
-        dl_dma_data <= prg_fifo_q;
-        ioctl_load_addr <= ioctl_load_addr + 1'b1;
-        prg_fifo_rd <= prg_fifo_rd + 1'd1;
-        dl_dma_wait <= 3'd7;
-    end
 
     // On falling edge of io_cycle: perform one SDRAM write if pending
     if (~io_cycle & io_cycleD) begin
@@ -1343,12 +1324,10 @@ always @(posedge clk_sys) begin
     if (io_cycle) {io_cycle_ce, io_cycle_we} <= 0;
 
     // Handle file writes — use a FIFO to buffer PRG bytes
-    // data_loader fires faster than io_cycle can consume
+    // data_loader is paced to stream directly into SDRAM.
     if (ioctl_wr) begin
         if (load_prg) begin
             if      (ioctl_addr == 0) begin
-                prg_fifo_wr <= 0;
-                prg_fifo_rd <= 0;
                 prg_finish_pending <= 0;
                 inj_meminit <= 0;
                 ioctl_load_addr[7:0] <= ioctl_data;
@@ -1356,9 +1335,10 @@ always @(posedge clk_sys) begin
             end
             else if (ioctl_addr == 1) begin ioctl_load_addr[15:8] <= ioctl_data; inj_end[15:8] <= ioctl_data; end
             else begin
-                // Buffer the byte into FIFO
-                prg_fifo[prg_fifo_wr] <= ioctl_data;
-                prg_fifo_wr <= prg_fifo_wr + 1'd1;
+                dl_dma_ce   <= 1;
+                dl_dma_addr <= ioctl_load_addr;
+                dl_dma_data <= ioctl_data;
+                ioctl_load_addr <= ioctl_load_addr + 1'b1;
                 inj_end <= inj_end + 1'b1;
             end
         end
@@ -1366,15 +1346,18 @@ always @(posedge clk_sys) begin
         if (load_disk) begin
             if (ioctl_addr == 0) begin
                 ioctl_load_addr <= DISK_ADDR;
-                prg_fifo_rd <= 0;
-                prg_fifo_wr <= 13'd1;
                 prg_finish_pending <= 0;
                 inj_meminit <= 0;
-                prg_fifo[0] <= ioctl_data;
+                dl_dma_ce   <= 1;
+                dl_dma_addr <= DISK_ADDR;
+                dl_dma_data <= ioctl_data;
+                ioctl_load_addr <= DISK_ADDR + 1'd1;
             end
             else begin
-                prg_fifo[prg_fifo_wr] <= ioctl_data;
-                prg_fifo_wr <= prg_fifo_wr + 1'd1;
+                dl_dma_ce   <= 1;
+                dl_dma_addr <= ioctl_load_addr;
+                dl_dma_data <= ioctl_data;
+                ioctl_load_addr <= ioctl_load_addr + 1'b1;
             end
         end
 
@@ -1460,7 +1443,7 @@ always @(posedge clk_sys) begin
 
     // BASIC pointer initialization after PRG load.
     // Wait until the buffered stream has fully drained to SDRAM first.
-    if (prg_finish_pending && (prg_fifo_rd == prg_fifo_wr) && ~inj_meminit) begin
+    if (prg_finish_pending && ~ioctl_download && ~dl_dma_ce && ~inj_meminit) begin
         prg_finish_pending <= 0;
         inj_meminit <= 1;
         ioctl_load_addr <= 0;
