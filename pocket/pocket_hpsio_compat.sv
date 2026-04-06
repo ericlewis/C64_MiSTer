@@ -46,13 +46,15 @@ reg         word_active_74a = 0;
 reg  [31:0] word_data_74a = 0;
 reg  [23:0] word_addr_74a = 0;
 reg   [1:0] word_idx_74a = 0;
+reg   [7:0] active_slot_id_74a = SLOT_ROM;
+reg  [31:0] active_slot_size_74a = 0;
 reg         dl_byte_wr_74a = 0;
-reg  [31:0] dl_byte_data_74a = 0;
+reg  [39:0] dl_byte_data_74a = 0;
 wire        dl_byte_stb_sys;
-wire [31:0] dl_byte_sys;
+wire [39:0] dl_byte_sys;
 
 sync_fifo #(
-    .WIDTH(32)
+    .WIDTH(40)
 ) dl_byte_fifo (
     .clk_write (clk_74a),
     .clk_read  (clk_sys),
@@ -86,6 +88,8 @@ always @(posedge clk_74a) begin
     if (dataslot_requestwrite) begin
         dl_downloading_74a <= 1;
         dl_start_74a <= ~dl_start_74a;
+        active_slot_id_74a <= dataslot_requestwrite_id[7:0];
+        active_slot_size_74a <= dataslot_requestwrite_size;
     end
     else if (dataslot_allcomplete) begin
         dl_downloading_74a <= 0;
@@ -102,13 +106,24 @@ always @(posedge clk_74a) begin
         word_idx_74a    <= 0;
     end
     else if (word_active_74a) begin
-        dl_byte_wr_74a <= 1;
         case (word_idx_74a)
-            2'd0: dl_byte_data_74a <= {word_addr_74a + 24'd0, bridge_endian_little ? word_data_74a[7:0]   : word_data_74a[31:24]};
-            2'd1: dl_byte_data_74a <= {word_addr_74a + 24'd1, bridge_endian_little ? word_data_74a[15:8]  : word_data_74a[23:16]};
-            2'd2: dl_byte_data_74a <= {word_addr_74a + 24'd2, bridge_endian_little ? word_data_74a[23:16] : word_data_74a[15:8]};
+            2'd0: begin
+                dl_byte_wr_74a <= ({8'd0, word_addr_74a} < active_slot_size_74a);
+                dl_byte_data_74a <= {active_slot_id_74a, word_addr_74a + 24'd0, bridge_endian_little ? word_data_74a[7:0]   : word_data_74a[31:24]};
+            end
+            2'd1: begin
+                dl_byte_wr_74a <= ({8'd0, word_addr_74a} + 32'd1 < active_slot_size_74a);
+                dl_byte_data_74a <= {active_slot_id_74a, word_addr_74a + 24'd1, bridge_endian_little ? word_data_74a[15:8]  : word_data_74a[23:16]};
+            end
+            2'd2: begin
+                dl_byte_wr_74a <= ({8'd0, word_addr_74a} + 32'd2 < active_slot_size_74a);
+                dl_byte_data_74a <= {active_slot_id_74a, word_addr_74a + 24'd2, bridge_endian_little ? word_data_74a[23:16] : word_data_74a[15:8]};
+            end
             default:
-                  dl_byte_data_74a <= {word_addr_74a + 24'd3, bridge_endian_little ? word_data_74a[31:24] : word_data_74a[7:0]};
+                  begin
+                      dl_byte_wr_74a <= ({8'd0, word_addr_74a} + 32'd3 < active_slot_size_74a);
+                      dl_byte_data_74a <= {active_slot_id_74a, word_addr_74a + 24'd3, bridge_endian_little ? word_data_74a[31:24] : word_data_74a[7:0]};
+                  end
         endcase
 
         if (word_idx_74a == 2'd3) begin
@@ -126,9 +141,9 @@ reg        dl_stream_prev = 0;
 reg        ioctl_download_prev = 0;
 reg  [7:0] dl_tail_hold = 0;
 reg        dl_start_74a = 0, dl_start_s0 = 0, dl_start_s1 = 0, dl_start_prev = 0;
-wire       dl_byte_in_range = ({8'd0, dl_byte_sys[31:8]} < current_slot_size);
 wire       active_now = dl_s1 || dl_byte_stb_sys || (dl_tail_hold != 0);
 wire [7:0] active_ioctl_index = slot_to_ioctl_index(current_slot_id);
+wire [7:0] byte_ioctl_index = slot_to_ioctl_index(dl_byte_sys[39:32]);
 
 always @(posedge clk_sys) begin
     load_start <= 0;
@@ -152,10 +167,10 @@ always @(posedge clk_sys) begin
     else if (dl_tail_hold != 0) dl_tail_hold <= dl_tail_hold - 1'd1;
 
     ioctl_download <= active_now;
-    ioctl_wr       <= dl_byte_stb_sys && dl_byte_in_range;
+    ioctl_wr       <= dl_byte_stb_sys;
     ioctl_addr     <= {1'b0, dl_byte_sys[31:8]};
     ioctl_data     <= dl_byte_sys[7:0];
-    ioctl_index    <= active_ioctl_index;
+    ioctl_index    <= dl_byte_stb_sys ? byte_ioctl_index : active_ioctl_index;
 
     if (dl_start_s1 != dl_start_prev) load_start <= 1;
     if (ioctl_download_prev && !active_now) load_done <= 1;
