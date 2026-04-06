@@ -404,12 +404,14 @@ always @(posedge clk_vid) osk_font_data <= osk_font_rom[osk_font_addr];
 // Pixel counters in clk_vid domain — count only within active (DE) area
 wire vid_de_raw = ~vid_hb & ~vid_vb;
 reg  vid_crop_bottom = 0;
+reg  vid_crop_right = 0;
 reg [9:0] osk_h_cnt = 0, osk_v_cnt = 0;
 reg       prev_de, prev_vid_vb;
 always @(posedge clk_vid) begin
     prev_de <= vid_de_raw;
     prev_vid_vb <= vid_vb;
     vid_crop_bottom <= ~ntsc && (osk_v_cnt == 10'd270);
+    vid_crop_right <= (osk_h_cnt == 10'd319);
     if (vid_de_raw)
         osk_h_cnt <= osk_h_cnt + 1'd1;
     // Rising edge of DE = start of new active line
@@ -421,8 +423,8 @@ always @(posedge clk_vid) begin
     if (vid_vb & ~prev_vid_vb) osk_v_cnt <= 0;
 end
 
-// OSK toggle: L+R shoulders
-wire osk_toggle = cont1_key[8] & cont1_key[9];
+// OSK toggle: Select button
+wire osk_toggle = cont1_key[11];
 
 // OSK instance
 wire        osk_active;
@@ -592,8 +594,8 @@ always @(posedge clk_sys) begin
 end
 
 always @(posedge clk_vid_90) begin
-    video_rgb_out <= ((~vid_hb & ~vid_vb) && ~vid_crop_bottom) ? osk_rgb_out : 24'd0;
-    video_de_out  <= (~vid_hb & ~vid_vb) && ~vid_crop_bottom;
+    video_rgb_out <= ((~vid_hb & ~vid_vb) && ~vid_crop_bottom && ~vid_crop_right) ? osk_rgb_out : 24'd0;
+    video_de_out  <= (~vid_hb & ~vid_vb) && ~vid_crop_bottom && ~vid_crop_right;
     video_vs_out  <= vid_vs;
     video_hs_out  <= vid_hs;
 end
@@ -1215,7 +1217,7 @@ always @(posedge clk_sys) begin
         img_size    <= dl_slot_size_s1;
         img_mount_request <= 1;
     end
-    else if (img_mount_request && ~ioctl_download) begin
+    else if (img_mount_request && ~ioctl_download && (dl_write_tail_hold == 0)) begin
         img_mounted <= 1;
         img_mount_request <= 0;
     end
@@ -1315,8 +1317,9 @@ reg        prg_finish_pending = 0;
 reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
 reg [15:0] inj_end;
+reg  [7:0] dl_write_tail_hold = 0;
 
-assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit;
+assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit | (dl_write_tail_hold != 0);
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
@@ -1330,6 +1333,7 @@ always @(posedge clk_sys) begin
     cart_hdr_wr  <= 0;
     start_strk   <= 0; // auto-clear each cycle, pulse only
     dl_dma_push  <= 0;
+    if (dl_write_tail_hold != 0) dl_write_tail_hold <= dl_write_tail_hold - 1'd1;
 
     // On falling edge of io_cycle: perform one SDRAM write if pending
     if (~io_cycle & io_cycleD) begin
@@ -1370,6 +1374,7 @@ always @(posedge clk_sys) begin
                 dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= ioctl_load_addr + 1'b1;
                 inj_end <= inj_end + 1'b1;
+                dl_write_tail_hold <= 8'd64;
             end
         end
 
@@ -1382,12 +1387,14 @@ always @(posedge clk_sys) begin
                 dl_dma_addr_push <= DISK_ADDR;
                 dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= DISK_ADDR + 1'd1;
+                dl_write_tail_hold <= 8'd64;
             end
             else begin
                 dl_dma_push <= 1;
                 dl_dma_addr_push <= ioctl_load_addr;
                 dl_dma_data_push <= ioctl_data;
                 ioctl_load_addr <= ioctl_load_addr + 1'b1;
+                dl_write_tail_hold <= 8'd64;
             end
         end
 
@@ -1473,7 +1480,7 @@ always @(posedge clk_sys) begin
 
     // BASIC pointer initialization after PRG load.
     // Wait until the buffered stream has fully drained to SDRAM first.
-    if (prg_finish_pending && ~ioctl_download && ~inj_meminit) begin
+    if (prg_finish_pending && ~ioctl_download && (dl_write_tail_hold == 0) && ~inj_meminit) begin
         prg_finish_pending <= 0;
         inj_meminit <= 1;
         ioctl_load_addr <= 0;
