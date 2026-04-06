@@ -760,7 +760,7 @@ wire ntsc = status[2];
 reg        c64_reset_n = 0;
 reg [19:0] reset_counter = 20'd200000;
 
-reg boot_erase_done = 0; // tracks if initial boot erase has completed
+reg boot_erase_done = 1; // skip costly full RAM erase unless explicitly requested
 reg reset_wait = 0;
 wire loader_load_start;
 wire loader_load_done;
@@ -769,9 +769,10 @@ always @(posedge clk_sys) begin
     c64_reset_n <= (reset_counter == 0);
 
     if (status[0]) begin
-        // Manual reset — re-erase
+        // Manual reset. Only re-enable the expensive RAM erase path if the
+        // hidden "Clear RAM on Reset" option is explicitly turned on.
         reset_counter <= 20'd200000;
-        boot_erase_done <= 0;
+        boot_erase_done <= status[24];
         reset_wait <= 0;
     end
     else if (loader_load_start && load_prg) begin

@@ -39,6 +39,11 @@ integer k;
 initial begin
     for (k = 0; k < NUM_REGS; k = k + 1)
         regs_74a[k] = 32'd0;
+    // Pocket does not currently expose "Clear RAM on Reset" in interact.json.
+    // Default it to "No" so the core doesn't spend the first boot doing a
+    // full 64KB RAM wipe before showing video.
+    if (NUM_REGS > 14)
+        regs_74a[14] = 32'd1;
 end
 
 // Write: registered
