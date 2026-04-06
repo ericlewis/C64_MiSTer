@@ -768,6 +768,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE ascii_to_ps2.sv
 set_global_assignment -name SYSTEMVERILOG_FILE data_loader.sv
 set_global_assignment -name SYSTEMVERILOG_FILE sound_i2s.sv
 set_global_assignment -name SYSTEMVERILOG_FILE sync_fifo.sv
+set_global_assignment -name SYSTEMVERILOG_FILE prg_load_ctrl.sv
 
 # Pocket-specific modules
 set_global_assignment -name SYSTEMVERILOG_FILE pocket_hpsio_compat.sv

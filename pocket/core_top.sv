@@ -710,7 +710,7 @@ always @(posedge clk_sys) begin
     else if (ioctl_download && (load_crt || load_rom)) begin
         reset_counter <= 20'd255;
     end
-    else if ((ioctl_download || inj_meminit) && !reset_wait) begin
+    else if ((ioctl_download || prg_busy) && !reset_wait) begin
         // Hold the startup counter only while APF is actively streaming bytes.
         // Once the bridge transfer ends, let the core run so queued writes can drain.
         if (!boot_erase_done)
@@ -770,6 +770,13 @@ wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
 wire  [7:0] ioctl_index;
 wire [31:0] loader_slot_size;
+wire        prg_payload_wr;
+wire [24:0] prg_payload_addr;
+wire  [7:0] prg_payload_data;
+wire        prg_meminit_wr;
+wire [24:0] prg_meminit_addr;
+wire  [7:0] prg_meminit_data;
+wire        prg_busy;
 wire load_prg  = ioctl_index == 8'h01;
 wire load_crt  = ioctl_index == 8'h41;
 wire load_disk = ioctl_index == 8'h80;
@@ -830,7 +837,7 @@ usb_to_ps2 usb_kbd (
 
 // Auto-RUN key injection after PRG load
 // Injects: R, U, N, RETURN
-reg        start_strk = 0;
+wire       start_strk;
 reg [10:0] key = 0;
 reg        reset_keys = 0;
 
@@ -1227,17 +1234,36 @@ reg [24:0] io_cycle_addr;
 reg  [7:0] io_cycle_data;
 reg [24:0] ioctl_load_addr;
 reg        ioctl_req_wr;
+reg        prg_meminit_pending = 0;
+reg [24:0] prg_meminit_pending_addr = 0;
+reg  [7:0] prg_meminit_pending_data = 0;
 reg        force_erase = 0;
 reg        erasing = 0;
-
-reg        prg_finish_pending = 0;
-reg        inj_meminit = 0;
-reg  [7:0] inj_meminit_data;
-reg [15:0] inj_end;
 reg  [7:0] dl_write_tail_hold = 0;
 wire       loader_busy;
 
-assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit | (dl_write_tail_hold != 0);
+assign loader_busy = ioctl_download | img_mount_request | prg_busy | (dl_write_tail_hold != 0);
+
+prg_load_ctrl prg_loader_ctrl (
+    .clk             (clk_sys),
+    .reset           (status[0]),
+    .ioctl_wr        (ioctl_wr && load_prg),
+    .ioctl_addr      (ioctl_addr),
+    .ioctl_data      (ioctl_data),
+    .load_done       (loader_load_done && load_prg),
+    .ioctl_download  (ioctl_download),
+    .write_drain_done(dl_write_tail_hold == 0),
+    .mem_write_busy  (ioctl_req_wr || prg_meminit_pending || erasing),
+    .payload_wr      (prg_payload_wr),
+    .payload_addr    (prg_payload_addr),
+    .payload_data    (prg_payload_data),
+    .meminit_wr      (prg_meminit_wr),
+    .meminit_addr    (prg_meminit_addr),
+    .meminit_data    (prg_meminit_data),
+    .start_strk      (start_strk),
+    .inj_end         (),
+    .busy            (prg_busy)
+);
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
@@ -1247,7 +1273,6 @@ always @(posedge clk_sys) begin
 
     io_cycleD    <= io_cycle;
     cart_hdr_wr  <= 0;
-    start_strk   <= 0; // auto-clear each cycle, pulse only
     dl_dma_push  <= 0;
     if (dl_write_tail_hold != 0) dl_write_tail_hold <= dl_write_tail_hold - 1'd1;
 
@@ -1257,48 +1282,45 @@ always @(posedge clk_sys) begin
         io_cycle_we <= 0;
 
         if (ioctl_req_wr) begin
-            // Erase or meminit write
+            // Erase or cartridge write
             ioctl_req_wr <= 0;
             io_cycle_we  <= 1;
             io_cycle_addr <= ioctl_load_addr;
             ioctl_load_addr <= ioctl_load_addr + 1'b1;
             if (erasing)
                 io_cycle_data <= {8{ioctl_load_addr[6]}};
-            else if (inj_meminit)
-                io_cycle_data <= inj_meminit_data;
             else
                 io_cycle_data <= ioctl_data;
+        end
+        else if (prg_meminit_pending) begin
+            prg_meminit_pending <= 0;
+            io_cycle_we <= 1;
+            io_cycle_addr <= prg_meminit_pending_addr;
+            io_cycle_data <= prg_meminit_pending_data;
         end
     end
 
     if (io_cycle) {io_cycle_ce, io_cycle_we} <= 0;
 
+    if (prg_payload_wr) begin
+        dl_dma_push <= 1;
+        dl_dma_addr_push <= prg_payload_addr;
+        dl_dma_data_push <= prg_payload_data;
+        dl_write_tail_hold <= 8'd64;
+    end
+
+    if (prg_meminit_wr) begin
+        prg_meminit_pending <= 1;
+        prg_meminit_pending_addr <= prg_meminit_addr;
+        prg_meminit_pending_data <= prg_meminit_data;
+    end
+
     // Handle file writes — use a FIFO to buffer PRG bytes
     // data_loader is paced to stream directly into SDRAM.
     if (ioctl_wr) begin
-        if (load_prg) begin
-            if      (ioctl_addr == 0) begin
-                prg_finish_pending <= 0;
-                inj_meminit <= 0;
-                ioctl_load_addr[7:0] <= ioctl_data;
-                inj_end[7:0] <= ioctl_data;
-            end
-            else if (ioctl_addr == 1) begin ioctl_load_addr[15:8] <= ioctl_data; inj_end[15:8] <= ioctl_data; end
-            else begin
-                dl_dma_push <= 1;
-                dl_dma_addr_push <= ioctl_load_addr;
-                dl_dma_data_push <= ioctl_data;
-                ioctl_load_addr <= ioctl_load_addr + 1'b1;
-                inj_end <= inj_end + 1'b1;
-                dl_write_tail_hold <= 8'd64;
-            end
-        end
-
         if (load_disk) begin
             if (ioctl_addr == 0) begin
                 ioctl_load_addr <= DISK_ADDR;
-                prg_finish_pending <= 0;
-                inj_meminit <= 0;
                 dl_dma_push <= 1;
                 dl_dma_addr_push <= DISK_ADDR;
                 dl_dma_data_push <= ioctl_data;
@@ -1362,7 +1384,6 @@ always @(posedge clk_sys) begin
 
     // Track load boundaries so buffered data is allowed to drain before any
     // post-processing runs.
-    if (loader_load_done && load_prg) prg_finish_pending <= 1;
     if (loader_load_done && load_crt) begin
         cart_attached <= 1;
         erase_cram <= 1;
@@ -1386,34 +1407,6 @@ always @(posedge clk_sys) begin
                 erasing <= 0;
                 erase_cram <= 0;
             end
-        end
-    end
-
-    // BASIC pointer initialization after PRG load.
-    // Wait until the buffered stream has fully drained to SDRAM first.
-    if (prg_finish_pending && ~ioctl_download && (dl_write_tail_hold == 0) && ~inj_meminit) begin
-        prg_finish_pending <= 0;
-        inj_meminit <= 1;
-        ioctl_load_addr <= 0;
-    end
-
-    if (inj_meminit && !ioctl_req_wr) begin
-        if (ioctl_load_addr == 'h100) begin
-            inj_meminit <= 0;
-            start_strk  <= 1; // trigger auto-RUN
-        end
-        else begin
-            case (ioctl_load_addr)
-                'h2B: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h01; end // TXT low
-                'h2C: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h08; end // TXT high
-                'hAC: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h00; end // SAVE low
-                'hAD: begin ioctl_req_wr <= 1; inj_meminit_data <= 'h00; end // SAVE high
-                'h2D, 'h2F, 'h31, 'hAE:
-                      begin ioctl_req_wr <= 1; inj_meminit_data <= inj_end[7:0]; end
-                'h2E, 'h30, 'h32, 'hAF:
-                      begin ioctl_req_wr <= 1; inj_meminit_data <= inj_end[15:8]; end
-                default: ioctl_load_addr <= ioctl_load_addr + 1'b1;
-            endcase
         end
     end
 end
