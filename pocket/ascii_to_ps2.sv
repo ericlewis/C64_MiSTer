@@ -62,7 +62,8 @@ always @(*) begin
     8'h0D:    begin scancode = 8'h5A; end // Enter
     8'h08:    begin scancode = 8'h66; end // Backspace
     "-", "_": begin scancode = 8'h4E; needs_shift = (ascii == "_"); end
-    "=", "+": begin scancode = 8'h55; needs_shift = (ascii == "+"); end
+    "=":      begin scancode = 8'h09; end  // C64 '=' logical key
+    "+":      begin scancode = 8'h55; end  // C64 '+' key
     "[", "{": begin scancode = 8'h54; needs_shift = (ascii == "{"); end
     "]", "}": begin scancode = 8'h5B; needs_shift = (ascii == "}"); end
     ";", ":": begin scancode = 8'h4C; needs_shift = (ascii == ":"); end
