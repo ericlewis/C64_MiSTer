@@ -403,15 +403,11 @@ always @(posedge clk_vid) osk_font_data <= osk_font_rom[osk_font_addr];
 
 // Pixel counters in clk_vid domain — count only within active (DE) area
 wire vid_de_raw = ~vid_hb & ~vid_vb;
-reg  vid_crop_bottom = 0;
-reg  vid_crop_right = 0;
 reg [9:0] osk_h_cnt = 0, osk_v_cnt = 0;
 reg       prev_de, prev_vid_vb;
 always @(posedge clk_vid) begin
     prev_de <= vid_de_raw;
     prev_vid_vb <= vid_vb;
-    vid_crop_bottom <= ~ntsc && (osk_v_cnt == 10'd270);
-    vid_crop_right <= (osk_h_cnt == 10'd319);
     if (vid_de_raw)
         osk_h_cnt <= osk_h_cnt + 1'd1;
     // Rising edge of DE = start of new active line
@@ -432,10 +428,6 @@ wire [7:0]  osk_char;
 wire        osk_char_valid, osk_backspace, osk_enter;
 wire [23:0] c64_rgb = {vid_r, vid_g, vid_b};
 wire [23:0] osk_rgb_out;
-reg  [23:0] video_rgb_out = 24'd0;
-reg         video_de_out = 0;
-reg         video_vs_out = 0;
-reg         video_hs_out = 0;
 
 osk #(.H_ACTIVE(320), .V_ACTIVE(240)) osk_inst (
     .clk          (clk_vid),
@@ -593,17 +585,10 @@ always @(posedge clk_sys) begin
     endcase
 end
 
-always @(posedge clk_vid_90) begin
-    video_rgb_out <= ((~vid_hb & ~vid_vb) && ~vid_crop_bottom && ~vid_crop_right) ? osk_rgb_out : 24'd0;
-    video_de_out  <= (~vid_hb & ~vid_vb) && ~vid_crop_bottom && ~vid_crop_right;
-    video_vs_out  <= vid_vs;
-    video_hs_out  <= vid_hs;
-end
-
-assign video_rgb = video_rgb_out;
-assign video_de  = video_de_out;
-assign video_vs  = video_vs_out;
-assign video_hs  = video_hs_out;
+assign video_rgb = (~vid_hb & ~vid_vb) ? osk_rgb_out : 24'd0;
+assign video_de  = ~vid_hb & ~vid_vb;
+assign video_vs  = vid_vs;
+assign video_hs  = vid_hs;
 
 // ========================================================================
 //  Audio Output — agg23 sound_i2s with proper CDC
@@ -698,11 +683,11 @@ reg [19:0] reset_counter = 20'd200000;
 
 reg boot_erase_done = 0; // tracks if initial boot erase has completed
 reg reset_wait = 0;
-reg old_download_reset = 0;
+wire loader_load_start;
+wire loader_load_done;
 
 always @(posedge clk_sys) begin
     c64_reset_n <= (reset_counter == 0);
-    old_download_reset <= ioctl_download;
 
     if (status[0]) begin
         // Manual reset — re-erase
@@ -710,7 +695,7 @@ always @(posedge clk_sys) begin
         boot_erase_done <= 0;
         reset_wait <= 0;
     end
-    else if (~old_download_reset && ioctl_download && load_prg) begin
+    else if (loader_load_start && load_prg) begin
         // Match MiSTer's reset-and-run PRG behavior: briefly reset the C64
         // so BASIC restarts cleanly before meminit and auto-RUN.
         reset_wait <= 1;
@@ -769,41 +754,21 @@ wire [6:0] joy_b = status[3] ? joyA_c64 : joyB_c64;
 //  that isn't to the command (0xF8) or interact (0x00) space and route
 //  it through the ioctl interface.
 //
-//  Slot-based Pocket loading
+//  Slot-based Pocket loading is normalized through a small compatibility
+//  shim so the rest of the core sees MiSTer-style ioctl semantics.
 // ========================================================================
 
-localparam [7:0] SLOT_ROM  = 8'd0;
-localparam [7:0] SLOT_PRG  = 8'd1;
-localparam [7:0] SLOT_DISK = 8'd2;
-localparam [7:0] SLOT_CRT  = 8'd3;
+wire        ioctl_download;
+wire        ioctl_wr;
+wire [24:0] ioctl_addr;
+wire  [7:0] ioctl_data;
+wire  [7:0] ioctl_index;
+wire [31:0] loader_slot_size;
+wire load_prg  = ioctl_index == 8'h01;
+wire load_crt  = ioctl_index == 8'h41;
+wire load_disk = ioctl_index == 8'h80;
+wire load_rom  = ioctl_index == 8'd8;
 
-function automatic [7:0] slot_to_ioctl_index(input [7:0] slot_id);
-begin
-    case (slot_id)
-        SLOT_ROM:  slot_to_ioctl_index = 8'd8;
-        SLOT_PRG:  slot_to_ioctl_index = 8'h01;
-        SLOT_DISK: slot_to_ioctl_index = 8'h80;
-        SLOT_CRT:  slot_to_ioctl_index = 8'h41;
-        default:   slot_to_ioctl_index = 8'h00;
-    endcase
-end
-endfunction
-
-reg        ioctl_download = 0;
-reg        ioctl_wr = 0;
-reg [24:0] ioctl_addr;
-reg  [7:0] ioctl_data;
-reg  [7:0] ioctl_index;
-
-// ============================================================
-//  PRG Loading via data_loader (agg23 utility)
-//
-//  Non-deferred: Pocket writes file data directly to bridge at 0x1xxxxxxx.
-//  data_loader handles 32-bit word unpacking, endianness, and clock domain
-//  crossing via dcfifo. Outputs write_en/write_addr/write_data on clk_sys.
-// ============================================================
-
-// No target commands needed — Pocket loads data directly
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
     target_dataslot_write    <= 0;
@@ -811,78 +776,26 @@ always @(posedge clk_74a) begin
     target_dataslot_openfile <= 0;
 end
 
-// data_loader: converts bridge writes at 0x1xxxxxxx into byte-by-byte
-// writes synchronized to clk_sys
-wire        dl_wr;
-wire [27:0] dl_addr;
-wire  [7:0] dl_data;
-
-data_loader #(
-    .ADDRESS_MASK_UPPER_4(4'h1),  // captures 0x1xxxxxxx (matches data.json address)
-    .ADDRESS_SIZE(28),
-    // Match the io_cycle SDRAM writer so large PRG/D64 loads don't overflow the FIFO.
-    .WRITE_MEM_CLOCK_DELAY(10),
-    .OUTPUT_WORD_SIZE(1)
-) data_loader_inst (
-    .clk_74a(clk_74a),
-    .clk_memory(clk_sys),
-    .bridge_wr(bridge_wr),
-    .bridge_endian_little(bridge_endian_little),
-    .bridge_addr(bridge_addr),
-    .bridge_wr_data(bridge_wr_data),
-    .write_en(dl_wr),
-    .write_addr(dl_addr),
-    .write_data(dl_data)
+pocket_hpsio_compat loader_compat (
+    .clk_74a               (clk_74a),
+    .clk_sys               (clk_sys),
+    .bridge_addr           (bridge_addr),
+    .bridge_wr             (bridge_wr),
+    .bridge_wr_data        (bridge_wr_data),
+    .bridge_endian_little  (bridge_endian_little),
+    .dataslot_requestwrite (dataslot_requestwrite),
+    .dataslot_requestwrite_id(dataslot_requestwrite_id),
+    .dataslot_requestwrite_size(dataslot_requestwrite_size),
+    .dataslot_allcomplete  (dataslot_allcomplete),
+    .load_start            (loader_load_start),
+    .load_done             (loader_load_done),
+    .ioctl_download        (ioctl_download),
+    .ioctl_wr              (ioctl_wr),
+    .ioctl_addr            (ioctl_addr),
+    .ioctl_data            (ioctl_data),
+    .ioctl_index           (ioctl_index),
+    .slot_size             (loader_slot_size)
 );
-
-// Track the active dataslot up front, before any bridge bytes arrive.
-reg        dl_downloading_74a = 0;
-reg [7:0]  dl_slot_id_74a = SLOT_ROM;
-reg [31:0] dl_slot_size_74a = 0;
-
-always @(posedge clk_74a) begin
-    if (dataslot_requestwrite) begin
-        dl_downloading_74a <= 1;
-        dl_slot_id_74a <= dataslot_requestwrite_id[7:0];
-        dl_slot_size_74a <= dataslot_requestwrite_size;
-    end
-    else if (dataslot_allcomplete) begin
-        dl_downloading_74a <= 0;
-    end
-end
-
-reg dl_s0 = 0, dl_s1 = 0;
-reg [7:0]  dl_slot_id_s0 = SLOT_ROM, dl_slot_id_s1 = SLOT_ROM;
-reg [31:0] dl_slot_size_s0 = 0, dl_slot_size_s1 = 0;
-reg        dl_active_prev = 0;
-reg  [7:0] dl_tail_hold = 0;
-wire loader_busy;
-wire [7:0] active_ioctl_index = slot_to_ioctl_index(dl_slot_id_s1);
-wire load_prg  = active_ioctl_index == 8'h01;
-wire load_crt  = active_ioctl_index == 8'h41;
-wire load_disk = active_ioctl_index == 8'h80;
-wire load_rom  = active_ioctl_index == 8'd8;
-
-always @(posedge clk_sys) begin
-    dl_s0 <= dl_downloading_74a;
-    dl_s1 <= dl_s0;
-    dl_slot_id_s0 <= dl_slot_id_74a;
-    dl_slot_id_s1 <= dl_slot_id_s0;
-    dl_slot_size_s0 <= dl_slot_size_74a;
-    dl_slot_size_s1 <= dl_slot_size_s0;
-    dl_active_prev <= dl_s1;
-    if (dl_s1) dl_tail_hold <= 8'd96;
-    else if (dl_active_prev) dl_tail_hold <= 8'd96;
-    else if (dl_tail_hold != 0) dl_tail_hold <= dl_tail_hold - 1'd1;
-
-    ioctl_download <= dl_s1 || (dl_tail_hold != 0) || dl_wr;
-    ioctl_wr       <= dl_wr;
-    // The live slot id comes from dataslot_requestwrite_id; present slot-local
-    // byte offsets to the MiSTer-style loaders.
-    ioctl_addr     <= {1'b0, dl_addr[23:0]};
-    ioctl_data     <= dl_data;
-    ioctl_index    <= active_ioctl_index;
-end
 
 // ========================================================================
 //  C64 Core
@@ -1207,14 +1120,12 @@ end
 reg        img_mounted = 0;
 reg        img_mount_request = 0;
 reg [31:0] img_size = 0;
-reg        prev_loader_download = 0;
 
 always @(posedge clk_sys) begin
     img_mounted <= 0; // single-cycle pulse once SDRAM is ready
-    prev_loader_download <= ioctl_download;
 
-    if (prev_loader_download && ~ioctl_download && load_disk) begin
-        img_size    <= dl_slot_size_s1;
+    if (loader_load_done && load_disk) begin
+        img_size    <= loader_slot_size;
         img_mount_request <= 1;
     end
     else if (img_mount_request && ~ioctl_download && (dl_write_tail_hold == 0)) begin
@@ -1323,12 +1234,10 @@ assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | i
 
 always @(posedge clk_sys) begin
     reg        io_cycleD;
-    reg        old_download;
     reg  [4:0] erase_to;
     reg        erase_cram;
     reg        old_st0;
 
-    old_download <= ioctl_download;
     io_cycleD    <= io_cycle;
     cart_hdr_wr  <= 0;
     start_strk   <= 0; // auto-clear each cycle, pulse only
@@ -1446,15 +1355,10 @@ always @(posedge clk_sys) begin
 
     // Track load boundaries so buffered data is allowed to drain before any
     // post-processing runs.
-    if (old_download != ioctl_download) begin
-        if (~ioctl_download && load_prg) begin
-            prg_finish_pending <= 1;
-        end
-
-        if (load_crt) begin
-            cart_attached <= old_download;
-            erase_cram <= 1;
-        end
+    if (loader_load_done && load_prg) prg_finish_pending <= 1;
+    if (loader_load_done && load_crt) begin
+        cart_attached <= 1;
+        erase_cram <= 1;
     end
 
     old_st0 <= status[17];

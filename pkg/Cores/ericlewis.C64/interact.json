@@ -83,7 +83,7 @@
         "name": "System ROM",
         "type": "list",
         "address": "0x00000014",
-        "defaultval": "0x00",
+        "defaultval": "0x01",
         "options": [
           {
             "value": "0x00",
