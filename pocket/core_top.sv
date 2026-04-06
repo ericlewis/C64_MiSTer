@@ -419,8 +419,8 @@ always @(posedge clk_vid) begin
     if (vid_vb & ~prev_vid_vb) osk_v_cnt <= 0;
 end
 
-// OSK toggle: Select button
-wire osk_toggle = cont1_key[14];
+// OSK toggle: accept Select, Start, or L+R shoulders.
+wire osk_toggle = cont1_key[14] | cont1_key[15] | (cont1_key[8] & cont1_key[9]);
 
 // OSK instance
 wire        osk_active;
