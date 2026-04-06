@@ -1229,6 +1229,7 @@ reg        inj_meminit = 0;
 reg  [7:0] inj_meminit_data;
 reg [15:0] inj_end;
 reg  [7:0] dl_write_tail_hold = 0;
+wire       loader_busy;
 
 assign loader_busy = ioctl_download | img_mount_request | prg_finish_pending | inj_meminit | (dl_write_tail_hold != 0);
 
