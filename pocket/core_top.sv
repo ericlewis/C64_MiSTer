@@ -1312,11 +1312,12 @@ reg        ioctl_req_wr;
 reg        prg_meminit_pending = 0;
 reg [24:0] prg_meminit_pending_addr = 0;
 reg  [7:0] prg_meminit_pending_data = 0;
+reg        crt_finish_pending = 0;
 reg        force_erase = 0;
 reg        erasing = 0;
 wire       loader_busy;
 
-assign loader_busy = ioctl_download | img_mount_request | prg_busy | ~dl_dma_drain_done;
+assign loader_busy = ioctl_download | img_mount_request | prg_busy | crt_finish_pending | ~dl_dma_drain_done;
 
 prg_load_ctrl prg_loader_ctrl (
     .clk             (clk_sys),
@@ -1342,7 +1343,7 @@ prg_load_ctrl prg_loader_ctrl (
 always @(posedge clk_sys) begin
     reg        io_cycleD;
     reg  [4:0] erase_to;
-    reg        erase_cram;
+    reg        erase_cram = 0;
     reg        old_st0;
 
     io_cycleD    <= io_cycle;
@@ -1411,6 +1412,7 @@ always @(posedge clk_sys) begin
                 ioctl_load_addr <= CRT_ADDR;
                 cart_blk_len <= 0;
                 cart_hdr_cnt <= 0;
+                crt_finish_pending <= 0;
             end
             if (ioctl_addr == 8'h16) cart_id[15:8]   <= ioctl_data;
             if (ioctl_addr == 8'h17) cart_id[7:0]    <= ioctl_data;
@@ -1440,7 +1442,10 @@ always @(posedge clk_sys) begin
                     if (cart_hdr_cnt == 15) cart_hdr_wr            <= 1;
                 end else begin
                     cart_blk_len <= cart_blk_len - 1'b1;
-                    ioctl_req_wr <= 1;
+                    dl_dma_push <= 1;
+                    dl_dma_addr_push <= ioctl_load_addr;
+                    dl_dma_data_push <= ioctl_data;
+                    ioctl_load_addr <= ioctl_load_addr + 1'b1;
                 end
             end
         end
@@ -1455,8 +1460,11 @@ always @(posedge clk_sys) begin
     // Track load boundaries so buffered data is allowed to drain before any
     // post-processing runs.
     if (loader_load_done && load_crt) begin
+        crt_finish_pending <= 1;
+    end
+    if (crt_finish_pending && ~ioctl_download && dl_dma_drain_done) begin
         cart_attached <= 1;
-        erase_cram <= 1;
+        crt_finish_pending <= 0;
     end
 
     old_st0 <= status[17];
