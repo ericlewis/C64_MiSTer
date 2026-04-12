@@ -56,14 +56,36 @@ constant TMP_PAYLOAD  = 0x1D10
                 jp error
 
 start:
+                ld r12,r0
                 ld r0,#CORE_DEFAULT
                 core r0
 
+                cmp r12,#SLOT_ROM
+                jp z,slot_rom
+                cmp r12,#SLOT_CART
+                jp z,slot_cart
+                cmp r12,#SLOT_DISK
+                jp z,slot_disk
+                cmp r12,#SLOT_PROGRAM
+                jp z,slot_program
+                jp boot_done
+
+slot_rom:
                 call load_rom_slot
+                jp boot_done
+
+slot_cart:
                 call load_cart_slot
+                jp boot_done
+
+slot_disk:
                 call load_disk_slot
+                jp boot_done
+
+slot_program:
                 call load_program_slot
 
+boot_done:
                 ld r0,#HOST_BOOT_CONT
                 host r0,r0
                 exit 0
