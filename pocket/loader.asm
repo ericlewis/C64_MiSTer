@@ -5,11 +5,11 @@ output "../pkg/Cores/ericlewis.C64/loader.bin", create
 //  C64 Pocket loader.bin
 //
 //  Chip32 takes over loading and selects the correct strategy for each slot:
-//    - System ROM  -> raw stream into ROM path
-//    - Program PRG -> raw stream into PRG loader
+//    - System ROM  -> raw loadf into ROM path
+//    - Program PRG -> raw loadf into PRG loader
 //    - Program T64 -> parse first entry, synthesize PRG header, stream payload
-//    - Disk image  -> choose IEC image type (D64/G64/D81), then raw stream
-//    - Cartridge   -> raw stream into CRT loader
+//    - Disk image  -> choose IEC image type (D64/G64/D81), then raw loadf
+//    - Cartridge   -> raw loadf into CRT loader
 //
 //  The core-side loader remains dumb: it receives an ioctl-like stream and
 //  existing HDL paths decide LOAD/RUN/MOUNT after the bytes land in RAM.
@@ -57,9 +57,13 @@ constant TMP_PAYLOAD  = 0x1D10
 
 start:
                 ld r12,r0
+                cmp r15,#1
+                jp z,dispatch_loaded
+
                 ld r0,#CORE_DEFAULT
                 core r0
 
+dispatch_loaded:
                 cmp r12,#SLOT_ROM
                 jp z,slot_rom
                 cmp r12,#SLOT_CART
@@ -86,52 +90,30 @@ slot_program:
                 call load_program_slot
 
 boot_done:
+                cmp r15,#1
+                jp z,runtime_done
                 ld r0,#HOST_BOOT_CONT
                 host r0,r0
+                ld r15,#1
+runtime_done:
                 exit 0
 
 // ============================================================================
 //  Slot 0 — System ROM
 // ============================================================================
 load_rom_slot:
-                ld r3,#SLOT_ROM
-                open r3,r0
+                ld r1,#SLOT_ROM
+                loadf r1
                 ret nz
-
-                ld.l (TMP_FILESIZE),r0
-                ld r0,#IOCTL_ROM
-                ld.l r1,(TMP_FILESIZE)
-                call manual_begin
-
-                ld r0,#STREAM_BASE
-                ld.l r1,(TMP_FILESIZE)
-                copy r0,r1
-                close
-                ret nz
-
-                call manual_end
                 ret
 
 // ============================================================================
 //  Slot 3 — Cartridge
 // ============================================================================
 load_cart_slot:
-                ld r3,#SLOT_CART
-                open r3,r0
+                ld r1,#SLOT_CART
+                loadf r1
                 ret nz
-
-                ld.l (TMP_FILESIZE),r0
-                ld r0,#IOCTL_CRT
-                ld.l r1,(TMP_FILESIZE)
-                call manual_begin
-
-                ld r0,#STREAM_BASE
-                ld.l r1,(TMP_FILESIZE)
-                copy r0,r1
-                close
-                ret nz
-
-                call manual_end
                 ret
 
 // ============================================================================
@@ -143,35 +125,17 @@ load_cart_slot:
 //    else D64
 // ============================================================================
 load_disk_slot:
-                ld r3,#SLOT_DISK
-                open r3,r0
-                ret nz
+                ld r1,#SLOT_DISK
+                ld r2,#RAMBUF
+                getext r1,r2
 
-                ld.l (TMP_FILESIZE),r0
-
-                cmp r0,#0x000C8000
+                ld r1,#RAMBUF
+                ld r2,#ext_d81
+                test r1,r2
                 jp z,disk_is_d81
 
-                ld r0,#RAMBUF
-                ld r1,#8
-                read r0,r1
-                jp nz,disk_default_d64_close
-
-                ld r0,#RAMBUF
-                ld.b r1,(r0)
-                cmp r1,#0x47
-                jp nz,disk_default_d64
-                ld r0,#RAMBUF+1
-                ld.b r1,(r0)
-                cmp r1,#0x43
-                jp nz,disk_default_d64
-                ld r0,#RAMBUF+2
-                ld.b r1,(r0)
-                cmp r1,#0x52
-                jp nz,disk_default_d64
-                ld r0,#RAMBUF+3
-                ld.b r1,(r0)
-                cmp r1,#0x2D
+                ld r2,#ext_g64
+                test r1,r2
                 jp nz,disk_default_d64
 
                 ld r0,#LOADER_IMG_TYPE
@@ -185,35 +149,15 @@ disk_is_d81:
                 pmpw r0,r1
                 jp load_disk_stream
 
-disk_default_d64_close:
-                close
-                ld r3,#SLOT_DISK
-                open r3,r0
-                ret nz
-
 disk_default_d64:
                 ld r0,#LOADER_IMG_TYPE
                 ld r1,#IMG_D64
                 pmpw r0,r1
 
 load_disk_stream:
-                ld r0,#IOCTL_DISK
-                ld.l r1,(TMP_FILESIZE)
-                call manual_begin
-
-                ld r1,#0
-                seek r1
-                jp nz,disk_close_fail
-
-                ld r0,#STREAM_BASE
-                ld.l r1,(TMP_FILESIZE)
-                copy r0,r1
-
-disk_close_fail:
-                close
+                ld r1,#SLOT_DISK
+                loadf r1
                 ret nz
-
-                call manual_end
                 ret
 
 // ============================================================================
@@ -227,14 +171,28 @@ disk_close_fail:
 //    entry payload through the same PRG path
 // ============================================================================
 load_program_slot:
+                ld r1,#SLOT_PROGRAM
+                ld r2,#RAMBUF
+                getext r1,r2
+
+                ld r1,#RAMBUF
+                ld r2,#ext_t64
+                test r1,r2
+                jp z,load_program_t64
+
+                ld r1,#SLOT_PROGRAM
+                loadf r1
+                ret nz
+                ret
+
+load_program_t64:
                 ld r3,#SLOT_PROGRAM
                 open r3,r0
                 ret nz
                 ld.l (TMP_FILESIZE),r0
 
                 cmp r0,#0x60
-                jp c,program_load_raw
-
+                jp c,program_close_fail
                 ld r0,#RAMBUF
                 ld r1,#0x60
                 read r0,r1
@@ -243,15 +201,15 @@ load_program_slot:
                 ld r0,#RAMBUF
                 ld.b r1,(r0)
                 cmp r1,#0x43
-                jp nz,program_load_raw_seek0
+                jp nz,program_load_raw
                 ld r0,#RAMBUF+1
                 ld.b r1,(r0)
                 cmp r1,#0x36
-                jp nz,program_load_raw_seek0
+                jp nz,program_load_raw
                 ld r0,#RAMBUF+2
                 ld.b r1,(r0)
                 cmp r1,#0x34
-                jp nz,program_load_raw_seek0
+                jp nz,program_load_raw
 
                 // First T64 directory entry
                 ld r0,#RAMBUF+0x42
@@ -315,38 +273,35 @@ load_program_slot:
                 ld.l r1,(TMP_T64_OFF)
                 add r1,#2
                 seek r1
-                jp nz,program_close_fail
+                jp nz,program_t64_abort
 
                 ld r0,#STREAM_BASE+4
                 ld.l r1,(TMP_T64_LEN)
                 sub r1,#2
                 copy r0,r1
-                jp nz,program_close_fail
+                jp nz,program_t64_abort
 
 program_t64_done:
                 close
                 call manual_end
                 ret
 
-program_load_raw_seek0:
-                ld r1,#0
-                seek r1
-                jp nz,program_close_fail
+program_t64_abort:
+                close
+                call manual_end
+                ret
 
 program_load_raw:
-                ld r0,#IOCTL_PRG
-                ld.l r1,(TMP_FILESIZE)
-                call manual_begin
-
-                ld r0,#STREAM_BASE
-                ld.l r1,(TMP_FILESIZE)
-                copy r0,r1
+                close
+                ld r1,#SLOT_PROGRAM
+                loadf r1
+                ret nz
+                ret
 
 program_close_fail:
                 close
                 ret nz
 
-                call manual_end
                 ret
 
 // ============================================================================
@@ -387,3 +342,9 @@ error:
 
 msg_err:
                 db "loader error",10,0
+ext_t64:
+                db "T64",0
+ext_g64:
+                db "G64",0
+ext_d81:
+                db "D81",0
