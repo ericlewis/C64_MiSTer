@@ -189,10 +189,12 @@ assign vpll_feed = 1'bZ;
 
 wire [31:0] cmd_bridge_rd_data;
 wire [31:0] interact_bridge_rd_data;
+reg  [31:0] loader_bridge_rd_data = 32'd0;
 
 always @(*) begin
     casex (bridge_addr)
     32'h00xxxxxx: bridge_rd_data <= interact_bridge_rd_data;
+    32'h20xxxxxx: bridge_rd_data <= loader_bridge_rd_data;
     32'hF8xxxxxx: bridge_rd_data <= cmd_bridge_rd_data;
     default:      bridge_rd_data <= 32'd0;
     endcase
@@ -779,6 +781,8 @@ wire [24:0] ioctl_addr;
 wire  [7:0] ioctl_data;
 wire  [7:0] ioctl_index;
 wire [31:0] loader_slot_size;
+wire        loader_active_dbg;
+wire  [7:0] loader_ioctl_index_dbg;
 wire        prg_payload_wr;
 wire [24:0] prg_payload_addr;
 wire  [7:0] prg_payload_data;
@@ -790,12 +794,33 @@ wire load_prg  = ioctl_index == 8'h01;
 wire load_crt  = ioctl_index == 8'h41;
 wire load_disk = ioctl_index == 8'h80;
 wire load_rom  = ioctl_index == 8'd8;
+reg  [1:0] drive_img_type_74a = 2'b01;
+
+localparam [31:0] LOADER_IMG_TYPE_ADDR = 32'h20000010;
+localparam [31:0] LOADER_IOCTL_INDEX_ADDR = 32'h20000000;
+localparam [31:0] LOADER_SLOT_SIZE_ADDR   = 32'h20000004;
+localparam [31:0] LOADER_CTRL_ADDR        = 32'h20000008;
 
 always @(posedge clk_74a) begin
     target_dataslot_read     <= 0;
     target_dataslot_write    <= 0;
     target_dataslot_getfile  <= 0;
     target_dataslot_openfile <= 0;
+
+    if (bridge_wr && bridge_addr == LOADER_IMG_TYPE_ADDR)
+        drive_img_type_74a <= bridge_wr_data[1:0];
+end
+
+always @(*) begin
+    loader_bridge_rd_data = 32'd0;
+    if (bridge_addr == LOADER_IOCTL_INDEX_ADDR)
+        loader_bridge_rd_data = {24'd0, loader_ioctl_index_dbg};
+    else if (bridge_addr == LOADER_SLOT_SIZE_ADDR)
+        loader_bridge_rd_data = loader_slot_size;
+    else if (bridge_addr == LOADER_CTRL_ADDR)
+        loader_bridge_rd_data = {31'd0, loader_active_dbg};
+    else if (bridge_addr == LOADER_IMG_TYPE_ADDR)
+        loader_bridge_rd_data = {30'd0, drive_img_type_74a};
 end
 
 pocket_hpsio_compat loader_compat (
@@ -816,7 +841,9 @@ pocket_hpsio_compat loader_compat (
     .ioctl_addr            (ioctl_addr),
     .ioctl_data            (ioctl_data),
     .ioctl_index           (ioctl_index),
-    .slot_size             (loader_slot_size)
+    .slot_size             (loader_slot_size),
+    .active_dbg            (loader_active_dbg),
+    .current_ioctl_index_dbg(loader_ioctl_index_dbg)
 );
 
 // ========================================================================
@@ -1098,7 +1125,7 @@ iec_drive #(.PARPORT(1), .DUALROM(1), .DRIVES(1)) iec_drive_inst (
     .img_mounted  (img_mounted),
     .img_size     (img_size),
     .img_readonly (1'b0),
-    .img_type     (2'b01),
+    .img_type     (drive_img_type_74a),
     .drive_rpm    (3'd0),
     .drive_wobble (1'b0),
     .led          (drive_led),
