@@ -72,10 +72,6 @@ start:
 //  Slot 0 — System ROM
 // ============================================================================
 load_rom_slot:
-                ld r0,#SLOT_ROM
-                queryslot r0
-                ret z
-
                 ld r3,#SLOT_ROM
                 open r3,r0
                 ret nz
@@ -98,10 +94,6 @@ load_rom_slot:
 //  Slot 3 — Cartridge
 // ============================================================================
 load_cart_slot:
-                ld r0,#SLOT_CART
-                queryslot r0
-                ret z
-
                 ld r3,#SLOT_CART
                 open r3,r0
                 ret nz
@@ -129,10 +121,6 @@ load_cart_slot:
 //    else D64
 // ============================================================================
 load_disk_slot:
-                ld r0,#SLOT_DISK
-                queryslot r0
-                ret z
-
                 ld r3,#SLOT_DISK
                 open r3,r0
                 ret nz
@@ -217,10 +205,6 @@ disk_close_fail:
 //    entry payload through the same PRG path
 // ============================================================================
 load_program_slot:
-                ld r0,#SLOT_PROGRAM
-                queryslot r0
-                ret z
-
                 ld r3,#SLOT_PROGRAM
                 open r3,r0
                 ret nz
