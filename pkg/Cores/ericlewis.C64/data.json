@@ -33,6 +33,14 @@
         "parameters": "0x1",
         "extensions": ["crt"],
         "address": "0x13000000"
+      },
+      {
+        "id": 4,
+        "name": "Tape",
+        "required": false,
+        "parameters": "0x1",
+        "extensions": ["tap"],
+        "address": "0x14000000"
       }
     ]
   }

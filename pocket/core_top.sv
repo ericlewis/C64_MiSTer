@@ -793,6 +793,7 @@ wire        prg_busy;
 wire load_prg  = ioctl_index == 8'h01;
 wire load_crt  = ioctl_index == 8'h41;
 wire load_disk = ioctl_index == 8'h80;
+wire load_tap  = ioctl_index == 8'hC1;
 wire load_rom  = ioctl_index == 8'd8;
 reg  [1:0] drive_img_type_74a = 2'b01;
 
@@ -859,6 +860,11 @@ wire        IOE, IOF, romL, romH, UMAXromH;
 wire [17:0] audio_l, audio_r;
 wire  [7:0] r, g, b;
 wire        hsync, vsync;
+wire        tape_play;
+wire        cass_write;
+wire        cass_motor;
+wire        cass_sense;
+wire        cass_read;
 
 // Dock keyboard → PS/2 conversion
 wire [10:0] dock_ps2_key;
@@ -946,7 +952,7 @@ fpga64_sid_iec fpga64 (
     .nmi_n      (~nmi),
     .nmi_ack    (nmi_ack),
     .freeze_key (freeze_key),
-    .tape_play  (),
+    .tape_play  (tape_play),
     .mod_key    (mod_key),
     .roml       (romL),
     .romh       (romH),
@@ -1004,10 +1010,10 @@ fpga64_sid_iec fpga64 (
     .c64rom_data(ioctl_data),
     .c64rom_wr  (load_rom && !ioctl_addr[16:14] && ioctl_wr),
 
-    .cass_write (),
-    .cass_motor (),
-    .cass_sense (1'b1),
-    .cass_read  (1'b1)
+    .cass_write (cass_write),
+    .cass_motor (cass_motor),
+    .cass_sense (cass_sense),
+    .cass_read  (cass_read)
 );
 
 // ========================================================================
@@ -1262,6 +1268,7 @@ end
 // ========================================================================
 
 localparam CRT_ADDR  = 25'h0100000;
+localparam TAP_ADDR  = 25'h0200000;
 localparam DISK_ADDR = 25'h0400000;
 
 reg        io_cycle_ce;
@@ -1274,9 +1281,20 @@ reg        prg_meminit_pending = 0;
 reg [24:0] prg_meminit_pending_addr = 0;
 reg  [7:0] prg_meminit_pending_data = 0;
 reg        crt_finish_pending = 0;
+reg [24:0] tap_play_addr = 0;
+reg [24:0] tap_last_addr = 0;
+reg  [1:0] tap_wrreq = 0;
+wire       tap_wrfull;
+reg  [1:0] tap_version = 0;
+reg        tap_start = 0;
 reg        force_erase = 0;
 reg        erasing = 0;
 wire       loader_busy;
+wire       cass_run;
+wire       cass_finish;
+wire       tap_reset = ~c64_reset_n | (ioctl_download & load_tap) | !tap_last_addr | cass_finish |
+                       (cass_run & ((tap_last_addr - tap_play_addr) < 80));
+wire       tap_loaded = (tap_play_addr < tap_last_addr);
 
 assign loader_busy = ioctl_download | img_mount_request | prg_busy | crt_finish_pending | ~dl_dma_drain_done;
 
@@ -1306,15 +1324,19 @@ always @(posedge clk_sys) begin
     reg  [4:0] erase_to;
     reg        erase_cram = 0;
     reg        old_st0;
+    reg        read_cyc;
 
     io_cycleD    <= io_cycle;
     cart_hdr_wr  <= 0;
     dl_dma_push  <= 0;
+    tap_start    <= 0;
+    tap_wrreq    <= tap_wrreq << 1;
 
     // On falling edge of io_cycle: perform one SDRAM write if pending
     if (~io_cycle & io_cycleD) begin
         io_cycle_ce <= 1;
         io_cycle_we <= 0;
+        io_cycle_addr <= tap_play_addr + TAP_ADDR;
 
         if (ioctl_req_wr) begin
             // Erase or cartridge write
@@ -1336,6 +1358,26 @@ always @(posedge clk_sys) begin
     end
 
     if (io_cycle) {io_cycle_ce, io_cycle_we} <= 0;
+
+    if (tap_reset) begin
+        if (loader_load_done && load_tap) begin
+            tap_last_addr <= loader_slot_size + 32'd2;
+            tap_start <= 1;
+        end
+        else if (ioctl_download && load_tap) begin
+            tap_last_addr <= 0;
+        end
+        tap_play_addr <= 0;
+        read_cyc <= 0;
+    end
+    else begin
+        if (~io_cycle & io_cycleD & ~tap_wrfull & tap_loaded) read_cyc <= 1;
+        if (io_cycle & io_cycleD & read_cyc) begin
+            tap_play_addr <= tap_play_addr + 1'd1;
+            read_cyc <= 0;
+            tap_wrreq[0] <= 1;
+        end
+    end
 
     if (prg_payload_wr) begin
         dl_dma_push <= 1;
@@ -1411,6 +1453,14 @@ always @(posedge clk_sys) begin
             end
         end
 
+        if (load_tap) begin
+            if (ioctl_addr == 25'd12)
+                tap_version <= ioctl_data[1:0];
+            dl_dma_push <= 1;
+            dl_dma_addr_push <= TAP_ADDR + ioctl_addr;
+            dl_dma_data_push <= ioctl_data;
+        end
+
         if (load_rom) begin
             // System ROM data goes directly to fpga64 c64rom_* ports,
             // and drive ROM goes to iec_drive rom_* ports.
@@ -1449,5 +1499,23 @@ always @(posedge clk_sys) begin
         end
     end
 end
+
+c1530 c1530_inst (
+    .clk32                (clk_sys),
+    .restart_tape         (tap_reset),
+    .wav_mode             (1'b0),
+    .tap_version          (tap_version),
+    .host_tap_in          (sdram_data),
+    .host_tap_wrreq       (tap_wrreq[1]),
+    .tap_fifo_wrfull      (tap_wrfull),
+    .tap_fifo_error       (cass_finish),
+    .osd_play_stop_toggle (tape_play | tap_start),
+    .cass_sense           (cass_sense),
+    .cass_read            (cass_read),
+    .cass_write           (cass_write),
+    .cass_motor           (cass_motor),
+    .cass_run             (cass_run),
+    .ear_input            (1'b0)
+);
 
 endmodule
