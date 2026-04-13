@@ -15,7 +15,7 @@
         "name": "Program",
         "required": false,
         "parameters": "0x1",
-        "extensions": ["prg", "t64"],
+        "extensions": ["prg"],
         "address": "0x11000000"
       },
       {

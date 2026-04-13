@@ -1180,6 +1180,7 @@ always @(posedge clk_sys) begin
     img_mounted <= 0; // single-cycle pulse once SDRAM is ready
 
     if (loader_load_done && load_disk) begin
+        drive_img_type_74a <= (loader_slot_size == 32'd819200) ? 2'b10 : 2'b01;
         img_size    <= loader_slot_size;
         img_mount_request <= 1;
     end
